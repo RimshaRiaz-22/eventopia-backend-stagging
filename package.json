@@ -1,0 +1,49 @@
+{
+  "name": "reusable-backend-starter",
+  "version": "1.0.0",
+  "description": "Reusable Backend Starter - Authentication and CRUD System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "db:init": "node scripts/run-migration.js src/db/init.sql",
+    "db:migrate": "node scripts/run-migration.js migrations/run_migration.sql",
+    "db:bootstrap": "node scripts/bootstrap-db.js",
+    "db:seed:categories-tags": "node scripts/db-seed-categories-tags.js",
+    "test": "jest",
+    "test:run": "npm run test -- --run"
+  },
+  "keywords": [
+    "backend",
+    "express",
+    "postgres",
+    "jwt",
+    "authentication"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "body-parser": "^1.20.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "express-async-handler": "^1.2.0",
+    "express-rate-limit": "^7.1.5",
+    "geonames.js": "^3.0.6",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.12",
+    "pg": "^8.11.3",
+    "qrcode": "^1.5.4",
+    "stripe": "^22.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.11",
+    "supertest": "^6.3.4"
+  }
+}
