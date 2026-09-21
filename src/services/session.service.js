@@ -1,28 +1,33 @@
 const pool = require("../db");
-const { generateToken, hashToken, generateAccessToken, generateRefreshToken } = require("../utils/crypto");
+const { generateToken, generateAccessToken, verifyAccessToken, getAccessTokenTtlMs } = require("../utils/crypto");
+
+const SESSION_EXPIRED_CODE = "SESSION_EXPIRED";
+const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please log in again to continue.";
 
 /**
- * Create a session with JWT access token and refresh token
- * Returns both tokens and session info
+ * Error that tells the client its login is no longer valid and the user must log in again.
+ * The `code` lets the frontend tell this apart from other 401 responses (e.g. a wrong password).
+ */
+function sessionError(message = SESSION_EXPIRED_MESSAGE) {
+  const err = new Error(message);
+  err.code = SESSION_EXPIRED_CODE;
+  return err;
+}
+
+/**
+ * Create a session and its JWT access token.
+ * The session and the token expire together (JWT_ACCESS_EXPIRE, 24h by default).
  */
 async function createSession({ userId, deviceId, ip, userAgent, roles, rolesVersion }) {
-  // Generate refresh token (long-lived)
-  const refreshToken = generateToken();
-  const refreshTokenHash = hashToken(refreshToken);
-  
-  // Refresh token expires in 30 days (or from env)
-  const refreshExpiresAt = new Date(
-    Date.now() + (parseInt(process.env.JWT_REFRESH_EXPIRE_DAYS || "30") * 24 * 60 * 60 * 1000)
-  );
+  const expiresAt = new Date(Date.now() + getAccessTokenTtlMs());
 
-  // Create session record
   const sessionResult = await pool.query(
     `
-    INSERT INTO sessions (user_id, device_id, refresh_token_hash, expires_at, ip, user_agent)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO sessions (user_id, device_id, expires_at, ip, user_agent)
+    VALUES ($1, $2, $3, $4, $5)
     RETURNING id
     `,
-    [userId, deviceId || null, refreshTokenHash, refreshExpiresAt, ip, userAgent]
+    [userId, deviceId || null, expiresAt, ip, userAgent]
   );
 
   const sessionId = sessionResult.rows[0].id;
@@ -40,7 +45,6 @@ async function createSession({ userId, deviceId, ip, userAgent, roles, rolesVers
     );
   }
 
-  // Generate JWT access token (short-lived, 30 minutes)
   const accessTokenJti = generateToken(); // JWT ID for access token
   const accessToken = generateAccessToken({
     sub: userId,
@@ -62,22 +66,24 @@ async function createSession({ userId, deviceId, ip, userAgent, roles, rolesVers
 
   return {
     accessToken,
-    refreshToken,
     sessionId,
-    expiresAt: refreshExpiresAt,
+    expiresAt,
   };
 }
+
 /**
  * Validate JWT access token and check session
  * This is used by the auth middleware
  */
 async function validateAccessToken(accessToken) {
-  const { verifyAccessToken } = require("../utils/crypto");
-  
-  // Verify JWT signature and expiration
-  const decoded = verifyAccessToken(accessToken);
-  
-  // Check session exists and is valid
+  let decoded;
+  try {
+    decoded = verifyAccessToken(accessToken);
+  } catch (err) {
+    // Expired, malformed or tampered token: the user has to log in again.
+    throw sessionError();
+  }
+
   const result = await pool.query(
     `
     SELECT s.*, u.status, u.roles_version, u.role
@@ -89,29 +95,26 @@ async function validateAccessToken(accessToken) {
   );
 
   if (result.rowCount === 0) {
-    throw new Error("Session not found");
+    throw sessionError();
   }
 
   const session = result.rows[0];
 
-  // Check if session is revoked
   if (session.revoked_at) {
-    throw new Error("Session revoked");
+    throw sessionError();
   }
 
-  // Check if refresh token is expired (session expired)
   if (new Date(session.expires_at) < new Date()) {
-    throw new Error("Session expired");
+    throw sessionError();
   }
 
-  // Check if user is active
   if (session.status !== "active") {
-    throw new Error("User is not active");
+    throw sessionError("Your account is not active. Please contact support.");
   }
 
-  // Check roles version - if roles changed, token is invalid
+  // If roles changed since this token was issued, the user must log in again to get the new roles
   if (decoded.rolesVersion !== session.roles_version) {
-    throw new Error("Token invalidated due to role changes");
+    throw sessionError("Your account permissions have changed. Please log in again to continue.");
   }
 
   return {
@@ -119,51 +122,6 @@ async function validateAccessToken(accessToken) {
     sessionId: session.id,
     roles: decoded.roles || (session.role ? [session.role] : []),
     rolesVersion: decoded.rolesVersion,
-  };
-}
-
-/**
- * Validate refresh token and return session info
- */
-async function validateRefreshToken(refreshToken) {
-  const refreshTokenHash = hashToken(refreshToken);
-
-  const result = await pool.query(
-    `
-    SELECT s.*, u.status, u.roles_version, u.role
-    FROM sessions s
-    JOIN users u ON u.id = s.user_id
-    WHERE s.refresh_token_hash = $1
-    `,
-    [refreshTokenHash]
-  );
-
-  if (result.rowCount === 0) {
-    throw new Error("Invalid refresh token");
-  }
-
-  const session = result.rows[0];
-
-  // Check if session is revoked
-  if (session.revoked_at) {
-    throw new Error("Refresh token revoked");
-  }
-
-  // Check if refresh token is expired
-  if (new Date(session.expires_at) < new Date()) {
-    throw new Error("Refresh token expired");
-  }
-
-  // Check if user is active
-  if (session.status !== "active") {
-    throw new Error("User is not active");
-  }
-
-  return {
-    userId: session.user_id,
-    sessionId: session.id,
-    role: session.role,
-    rolesVersion: session.roles_version,
   };
 }
 
@@ -224,67 +182,11 @@ async function revokeAllUserSessions(userId, reason = "logout_all", keepSessionI
   return true;
 }
 
-/**
- * Refresh access token using refresh token
- * Implements token rotation (creates new refresh token)
- */
-async function refreshAccessToken(refreshToken, ip, userAgent) {
-  // Validate refresh token
-  const sessionInfo = await validateRefreshToken(refreshToken);
-
-  // Rotate refresh token (generate new one, revoke old)
-  const newRefreshToken = generateToken();
-  const newRefreshTokenHash = hashToken(newRefreshToken);
-  
-  const refreshExpiresAt = new Date(
-    Date.now() + (parseInt(process.env.JWT_REFRESH_EXPIRE_DAYS || "30") * 24 * 60 * 60 * 1000)
-  );
-
-  // Revoke old refresh token and update with new one
-  await pool.query(
-    `
-    UPDATE sessions
-    SET refresh_token_hash = $1,
-        expires_at = $2,
-        ip = COALESCE($3, ip),
-        user_agent = COALESCE($4, user_agent)
-    WHERE id = $5
-    `,
-    [newRefreshTokenHash, refreshExpiresAt, ip, userAgent, sessionInfo.sessionId]
-  );
-
-  // Generate new access token
-  const accessTokenJti = generateToken();
-  const accessToken = generateAccessToken({
-    sub: sessionInfo.userId,
-    sid: sessionInfo.sessionId,
-    jti: accessTokenJti,
-    roles: sessionInfo.role ? [sessionInfo.role] : [],
-    rolesVersion: sessionInfo.rolesVersion,
-  });
-
-  // Update session with new access token JTI
-  await pool.query(
-    `
-    UPDATE sessions
-    SET access_token_jti = $1
-    WHERE id = $2
-    `,
-    [accessTokenJti, sessionInfo.sessionId]
-  );
-
-  return {
-    accessToken,
-    refreshToken: newRefreshToken,
-    expiresAt: refreshExpiresAt,
-  };
-}
-
 module.exports = {
+  SESSION_EXPIRED_CODE,
+  SESSION_EXPIRED_MESSAGE,
   createSession,
   validateAccessToken,
-  validateRefreshToken,
   revokeSession,
   revokeAllUserSessions,
-  refreshAccessToken,
 };

@@ -168,7 +168,7 @@ const createOrder = async (req, res) => {
         orderPayload.stripe_checkout_url = existing.stripe_checkout_url;
         orderPayload.stripe_checkout_session_id = existing.stripe_checkout_session_id || null;
       }
-      return ok(res, req, { order: orderPayload }, 200);
+      return ok(res, req, { order: orderPayload }, "Your order has been retrieved.");
     }
 
     // ── Per-ticket type validation & fee calculation ─────────────────────────
@@ -388,7 +388,7 @@ const createOrder = async (req, res) => {
       orderPayload.stripe_checkout_url = baseOrderStripe.stripe_checkout_url || null;
       orderPayload.stripe_checkout_session_id = baseOrderStripe.stripe_checkout_session_id || null;
     }
-    return ok(res, req, { order: orderPayload }, 201);
+    return ok(res, req, { order: orderPayload }, "Your order has been created.", 201);
 
   } catch (err) {
     await client.query("ROLLBACK");
@@ -479,7 +479,6 @@ const confirmOrder = async (req, res) => {
            e.territory_id,
            e.promoter_id,
            e.guru_id,
-           e.network_manager_id,
            e.id AS event_id
          FROM orders o
          JOIN events e ON e.id = o.event_id

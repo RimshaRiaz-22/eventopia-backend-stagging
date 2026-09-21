@@ -2,14 +2,13 @@ const pool = require("../db");
 const { resolveTier, TIERS } = require("../services/tierResolver.service");
 
 // Day 8 baseline split constants mapped by tier label.
-// Network manager role has been removed in this project customisation.
 const SPLITS_BY_TIER = {
-  1: { promoter: "0.50", guru: "0.30", network_manager: "0.00", eventopia: "0.29", reinvestment: "0.00", vat_amount: "0.31", noda_fee: "0.35", distributable_pool: "1.19" },
-  2: { promoter: "0.50", guru: "0.35", network_manager: "0.00", eventopia: "0.40", reinvestment: "0.00", vat_amount: "0.40", noda_fee: "0.35", distributable_pool: "1.60" },
-  3: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.35", reinvestment: "0.17", vat_amount: "0.48", noda_fee: "0.35", distributable_pool: "2.02" },
-  4: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.50", reinvestment: "0.56", vat_amount: "0.59", noda_fee: "0.35", distributable_pool: "2.56" },
-  5: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.75", reinvestment: "1.15", vat_amount: "0.75", noda_fee: "0.35", distributable_pool: "3.40" },
-  6: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "1.00", reinvestment: "2.02", vat_amount: "0.98", noda_fee: "0.35", distributable_pool: "4.52" },
+  1: { promoter: "0.50", guru: "0.30", eventopia: "0.29", reinvestment: "0.00", vat_amount: "0.31", noda_fee: "0.35", distributable_pool: "1.19" },
+  2: { promoter: "0.50", guru: "0.35", eventopia: "0.40", reinvestment: "0.00", vat_amount: "0.40", noda_fee: "0.35", distributable_pool: "1.60" },
+  3: { promoter: "0.50", guru: "0.50", eventopia: "0.35", reinvestment: "0.17", vat_amount: "0.48", noda_fee: "0.35", distributable_pool: "2.02" },
+  4: { promoter: "0.50", guru: "0.50", eventopia: "0.50", reinvestment: "0.56", vat_amount: "0.59", noda_fee: "0.35", distributable_pool: "2.56" },
+  5: { promoter: "0.50", guru: "0.50", eventopia: "0.75", reinvestment: "1.15", vat_amount: "0.75", noda_fee: "0.35", distributable_pool: "3.40" },
+  6: { promoter: "0.50", guru: "0.50", eventopia: "1.00", reinvestment: "2.02", vat_amount: "0.98", noda_fee: "0.35", distributable_pool: "4.52" },
 };
 
 const FIVE_MIN_MS = 5 * 60 * 1000;
@@ -69,7 +68,6 @@ function formatTierRow(t) {
     splits: {
       promoter: split.promoter,
       guru: split.guru,
-      network_manager: split.network_manager,
       eventopia: split.eventopia,
       reinvestment: split.reinvestment,
     },

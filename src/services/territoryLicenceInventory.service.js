@@ -3,7 +3,7 @@ const {
   UI_STATUS,
   TERRITORY_STATUS,
   LICENCE_STATUSES_HOLDING_SLOT,
-} = require("../config/networkManagerTerritory.config");
+} = require("../config/territory.config");
 
 /**
  * Get list of territory licence inventory with computed availability and slots.

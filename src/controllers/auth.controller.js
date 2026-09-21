@@ -1,5 +1,5 @@
 const { createOtp, verifyOtp } = require("../services/otp.service");
-const { createSession, validateRefreshToken, refreshAccessToken, revokeAllUserSessions } = require("../services/session.service");
+const { createSession, revokeAllUserSessions } = require("../services/session.service");
 const pool = require("../db");
 const bcrypt = require("bcryptjs");
 const { generatePasswordResetToken } = require("../utils/crypto");
@@ -43,90 +43,14 @@ function validatePasswordStrength(password) {
   return errors.length > 0 ? errors : [];
 }
 
-/**
- * Validates password strength. Returns array of error messages for failed rules.
- * Strong password requires: min 8 chars, uppercase, lowercase, number, special character.
- */
-function validatePasswordStrength(password) {
-  const errors = [];
-  if (!password || typeof password !== "string" || password.trim() === "") return ["Password is required."];
-  if (password.length < 8) errors.push("Password must be at least 8 characters long.");
-  if (!/[A-Z]/.test(password)) errors.push("Password must contain at least one uppercase letter.");
-  if (!/[a-z]/.test(password)) errors.push("Password must contain at least one lowercase letter.");
-  if (!/[0-9]/.test(password)) errors.push("Password must contain at least one number.");
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    errors.push("Password must contain at least one special character (e.g. !@#$%^&*).");
-  }
-  return errors.length > 0 ? errors : [];
-}
-
-/**
- * Validates password strength. Returns array of error messages for failed rules.
- * Strong password requires: min 8 chars, uppercase, lowercase, number, special character.
- */
-function validatePasswordStrength(password) {
-  const errors = [];
-  if (!password || typeof password !== "string" || password.trim() === "") return ["Password is required."];
-  if (password.length < 8) errors.push("Password must be at least 8 characters long.");
-  if (!/[A-Z]/.test(password)) errors.push("Password must contain at least one uppercase letter.");
-  if (!/[a-z]/.test(password)) errors.push("Password must contain at least one lowercase letter.");
-  if (!/[0-9]/.test(password)) errors.push("Password must contain at least one number.");
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    errors.push("Password must contain at least one special character (e.g. !@#$%^&*).");
-  }
-  return errors.length > 0 ? errors : [];
-}
-
-/**
- * Validates password strength. Returns array of error messages for failed rules.
- * Strong password requires: min 8 chars, uppercase, lowercase, number, special character.
- */
-function validatePasswordStrength(password) {
-  const errors = [];
-  if (!password || typeof password !== "string" || password.trim() === "") return ["Password is required."];
-  if (password.length < 8) errors.push("Password must be at least 8 characters long.");
-  if (!/[A-Z]/.test(password)) errors.push("Password must contain at least one uppercase letter.");
-  if (!/[a-z]/.test(password)) errors.push("Password must contain at least one lowercase letter.");
-  if (!/[0-9]/.test(password)) errors.push("Password must contain at least one number.");
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    errors.push("Password must contain at least one special character (e.g. !@#$%^&*).");
-  }
-  return errors.length > 0 ? errors : [];
-}
-
-/**
- * Validates password strength. Returns array of error messages for failed rules.
- * Strong password requires: min 8 chars, uppercase, lowercase, number, special character.
- */
-function validatePasswordStrength(password) {
-  const errors = [];
-  if (!password || typeof password !== "string" || password.trim() === "") return ["Password is required."];
-  if (password.length < 8) errors.push("Password must be at least 8 characters long.");
-  if (!/[A-Z]/.test(password)) errors.push("Password must contain at least one uppercase letter.");
-  if (!/[a-z]/.test(password)) errors.push("Password must contain at least one lowercase letter.");
-  if (!/[0-9]/.test(password)) errors.push("Password must contain at least one number.");
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    errors.push("Password must contain at least one special character (e.g. !@#$%^&*).");
-  }
-  return errors.length > 0 ? errors : [];
-}
-
-/**
- * Validates password strength. Returns array of error messages for failed rules.
- * Strong password requires: min 8 chars, uppercase, lowercase, number, special character.
- */
-function validatePasswordStrength(password) {
-  const errors = [];
-  if (!password || typeof password !== "string" || password.trim() === "") return ["Password is required."];
-  if (password.length < 8) errors.push("Password must be at least 8 characters long.");
-  if (!/[A-Z]/.test(password)) errors.push("Password must contain at least one uppercase letter.");
-  if (!/[a-z]/.test(password)) errors.push("Password must contain at least one lowercase letter.");
-  if (!/[0-9]/.test(password)) errors.push("Password must contain at least one number.");
-  if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    errors.push("Password must contain at least one special character (e.g. !@#$%^&*).");
-  }
-  return errors.length > 0 ? errors : [];
-}
+// Friendly wording for the plain errors thrown by otp.service.verifyOtp (used by email verification).
+const OTP_ERROR_MESSAGES = {
+  "Invalid OTP": "That code is not correct. Please check it and try again.",
+  "OTP expired": "That code has expired. Please request a new one.",
+  "OTP already used": "That code has already been used. Please request a new one.",
+  "Too many wrong attempts": "Too many incorrect attempts. Please request a new code.",
+  "Invalid OTP request": "We could not find that verification request. Please request a new code.",
+};
 
 function mapUserForResponse(user) {
   const { id, user_no, ...rest } = user;
@@ -144,7 +68,7 @@ function mapUserForResponse(user) {
 }
 
 /* =======================
-   OTP VERIFY (Network Manager email verification)
+   OTP VERIFY (email verification)
    POST /auth/otp/verify
    Accepts: userId, otp
 ======================= */
@@ -272,7 +196,7 @@ if (errors.length > 0) {
     } catch (otpError) {
       return res.status(400).json({
         error: true,
-        message: otpError.message || "Invalid or expired OTP. Please try again.",
+        message: OTP_ERROR_MESSAGES[otpError.message] || "That code is not valid. Please check it and try again.",
         data: { userId: userId || null, email: user.email },
       });
     }
@@ -311,38 +235,31 @@ if (errors.length > 0) {
       }
     }
 
-    // Users with NULL role (Network Manager applicants) can login if email is verified
-    // They need to setup their account and submit their application
-    if (updatedUser.role === null || updatedUser.role === undefined) {
-      if (updatedUser.email_status !== 'verified') {
-        return res.status(403).json({
-          error: true,
-          message: "Please verify your email first before logging in.",
-          data: { userId },
-        });
-      }
+    // Accounts with no role yet (pending applications) cannot log in
+    if (!updatedUser.role) {
+      return res.status(403).json({
+        error: true,
+        message: "Your account is pending approval. You cannot login until your application is approved.",
+        data: { userId: updatedUser.user_no ?? updatedUser.id },
+      });
     }
 
     // Create JWT session
-    const sessionRoles = updatedUser.role ? [updatedUser.role] : ['network_manager_applicant'];
     const session = await createSession({
       userId: user.id,
       ip: req.ip,
       userAgent: req.headers["user-agent"],
-      roles: sessionRoles,
+      roles: [updatedUser.role],
       rolesVersion: updatedUser.roles_version || 1,
     });
 
     return res.json({
       error: false,
-      message: updatedUser.role === null
-        ? "Email verified successfully. Please complete your account setup and submit your Network Manager application."
-        : "Email verified successfully. You are now logged in.",
+      message: "Email verified successfully. You are now logged in.",
       data: {
         userId: updatedUser.user_no ?? updatedUser.id,
         accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
-        "expires-at": otpRecord.expires_at,
+        "expires-at": session.expiresAt,
         emailStatus: "verified",
         setupRequired: !updatedUser.name,
         role: updatedUser.role,
@@ -408,35 +325,12 @@ async function getMe(req, res) {
       };
     }
 
-    // Get Network Manager application if exists
-    let networkManagerApplication = null;
-    const nmAppResult = await pool.query(
-      `
-      SELECT id, territory_name, account_status, created_at, reviewed_at
-      FROM network_manager_applications
-      WHERE user_id = $1
-      `,
-      [req.user.id]
-    );
-
-    if (nmAppResult.rowCount > 0) {
-      networkManagerApplication = {
-        id: nmAppResult.rows[0].id,
-        territoryName: nmAppResult.rows[0].territory_name,
-        accountStatus: nmAppResult.rows[0].account_status,
-        createdAt: nmAppResult.rows[0].created_at,
-        reviewedAt: nmAppResult.rows[0].reviewed_at,
-      };
-    }
-
     // Get Guru application if exists
     let guruApplication = null;
     const guruAppResult = await pool.query(
       `
-      SELECT ga.id, ga.account_status, ga.created_at, ga.reviewed_at, ga.network_manager_user_id,
-             u.name as network_manager_name, u.city as network_manager_territory
+      SELECT ga.id, ga.account_status, ga.created_at, ga.reviewed_at, ga.territory_name
       FROM guru_applications ga
-      LEFT JOIN users u ON u.id = ga.network_manager_user_id
       WHERE ga.user_id = $1
       `,
       [req.user.id]
@@ -448,24 +342,18 @@ async function getMe(req, res) {
         accountStatus: guruAppResult.rows[0].account_status,
         createdAt: guruAppResult.rows[0].created_at,
         reviewedAt: guruAppResult.rows[0].reviewed_at,
-        networkManager: {
-          id: guruAppResult.rows[0].network_manager_user_id,
-          name: guruAppResult.rows[0].network_manager_name,
-        },
-        territoryName: guruAppResult.rows[0].network_manager_territory,
+        territoryName: guruAppResult.rows[0].territory_name,
       };
     }
 
-    // Get Promoter application if exists (with network manager from Guru hierarchy)
+    // Get Promoter application if exists
     let promoterApplication = null;
     const promoterAppResult = await pool.query(
       `
       SELECT pa.id, pa.account_status, pa.created_at, pa.reviewed_at, pa.guru_user_id,
-             pa.territory_name, u.name as guru_name,
-             gnm.network_manager_user_id
+             pa.territory_name, u.name as guru_name
       FROM promoter_applications pa
       LEFT JOIN users u ON u.id = pa.guru_user_id
-      LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pa.guru_user_id
       WHERE pa.user_id = $1
       `,
       [req.user.id]
@@ -482,7 +370,6 @@ async function getMe(req, res) {
           name: promoterAppResult.rows[0].guru_name,
         },
         territoryName: promoterAppResult.rows[0].territory_name,
-        networkManagerId: promoterAppResult.rows[0].network_manager_user_id,
       };
     }
 
@@ -534,18 +421,12 @@ async function getMe(req, res) {
           accountStatus: user.account_status || "active",
           emailStatus: user.email_status || "pending",
         },
-        networkManagerApplication,
         guruApplication,
         promoterApplication,
         userPreferences, // ✅ includes city and interests for quick setup
-        // For approved Gurus and Promoters, flatten hierarchy info to top level
-        ...(role === 'guru' && guruApplication && guruApplication.accountStatus === 'approved' ? {
-          network_manager_id: guruApplication.networkManager?.id,
-          territory_id: guruApplication.networkManager?.territoryName,
-        } : {}),
+        // For Promoters, flatten hierarchy info to top level
         ...(role === 'promoter' && promoterApplication ? {
           guru_id: promoter?.assignedGuru?.id ?? promoterApplication.guru?.id,
-          network_manager_id: promoterApplication.networkManagerId,
           territory_id: promoterApplication.territoryName,
         } : {}),
         ...(promoter ? { promoter } : {}),
@@ -798,8 +679,6 @@ async function register(req, res) {
     const passwordErrors = validatePasswordStrength(password);
     if (passwordErrors.length > 0) errors.push(...passwordErrors);
 
-    const isNetworkManagerRequest = role_requested === "network_manager" || role === "network_manager";
-
     if (errors.length > 0) {
       return res.status(400).json({
         error: true,
@@ -858,10 +737,19 @@ async function register(req, res) {
         });
       }
 
+      // Guru invitations are accepted through POST /auth/guru/register (account is active immediately)
+      if (inviteData.role === "guru") {
+        return res.status(400).json({
+          error: true,
+          message: "This is a Guru invitation. Please use the Guru registration link from your invitation email.",
+          data: null,
+        });
+      }
+
       console.log(`[REGISTER] Valid invite found for role: ${inviteData.role}`);
     }
 
-    // Handle role_requested for Network Manager, Guru, and Promoter flows
+    // Handle role_requested for Guru and Promoter flows
     const isGuruRequest = role_requested === "guru" || role === "guru";
     const isPromoterRequest = role_requested === "promoter" || role === "promoter";
 
@@ -873,11 +761,19 @@ async function register(req, res) {
       });
     }
 
+    if (role_requested === "network_manager" || role === "network_manager") {
+      return res.status(400).json({
+        error: true,
+        message: "The Network Manager role is no longer available. You can only choose: buyer, promoter, or guru.",
+        data: null,
+      });
+    }
+
     // Validate role if provided
     const allowedSelfAssignRoles = ["buyer", "promoter", "guru"];
-    const adminOnlyRoles = ["network_manager", "admin", "staff_finance", "staff_rewards", "staff_charity", "founder"];
+    const adminOnlyRoles = ["admin", "staff_finance", "staff_rewards", "staff_charity", "founder"];
 
-    if (role && !isNetworkManagerRequest) {
+    if (role) {
       // Check if role is valid
       const roleCheck = await pool.query(
         "SELECT key FROM roles WHERE key = $1",
@@ -887,12 +783,12 @@ async function register(req, res) {
       if (roleCheck.rowCount === 0) {
         return res.status(400).json({
           error: true,
-          message: `Invalid role: ${role}. Valid roles are: buyer, promoter, guru, network_manager, admin, staff_finance, staff_rewards, staff_charity, founder.`,
+          message: `Invalid role: ${role}. Valid roles are: buyer, promoter, guru, admin, staff_finance, staff_rewards, staff_charity, founder.`,
           data: null,
         });
       }
 
-      // Prevent self-assignment of admin-only roles (except network_manager which uses role_requested)
+      // Prevent self-assignment of admin-only roles
       if (adminOnlyRoles.includes(role)) {
         return res.status(403).json({
           error: true,
@@ -935,26 +831,15 @@ async function register(req, res) {
 
     // If user has an invite, use the role from the invite
     if (inviteData) {
-      // Guru invites require approval and activation fee - use buyer until approved
-      if (inviteData.role === "guru") {
-        initialRole = "buyer";
-        accountStatus = "pending";
-      } else {
-        initialRole = inviteData.role;
-        accountStatus = "active";
-      }
+      initialRole = inviteData.role;
+      accountStatus = "active";
       emailStatus = "pending";
       console.log(`[REGISTER] Using invite role: ${initialRole}`);
     } else {
       // No invite - use self-selection logic
-      // Network Manager role is NOT granted at registration - only after admin approval
-      initialRole = isNetworkManagerRequest ? null
-        : (isGuruRequest ? "buyer" : (role && allowedSelfAssignRoles.includes(role) ? role : "buyer"));
+      initialRole = isGuruRequest ? "buyer" : (role && allowedSelfAssignRoles.includes(role) ? role : "buyer");
 
-      if (isNetworkManagerRequest) {
-        accountStatus = "requested";
-        emailStatus = "pending";
-      } else if (isGuruRequest) {
+      if (isGuruRequest) {
         accountStatus = "requested";
         emailStatus = "pending";
       } else if (role === "promoter") {
@@ -1088,7 +973,7 @@ async function register(req, res) {
     }
 
     // Pre-provision guru public referral code during registration so frontend can read via GET endpoint.
-    if (isGuruRequest || inviteData?.role === "guru") {
+    if (isGuruRequest) {
       try {
         await ReferralService.createReferralCode(user.id);
       } catch (guruReferralErr) {
@@ -1096,62 +981,13 @@ async function register(req, res) {
       }
     }
 
-    // If user registered via invite, mark invite as used and handle special flows
+    // If user registered via invite, mark invite as used
     if (inviteData) {
-      const client = await pool.connect();
       try {
-        await client.query('BEGIN');
-
-        // Mark invite as used
-        await client.query(
-          `UPDATE guru_invites SET used_at = NOW() WHERE id = $1`,
-          [inviteData.id]
-        );
-
-        if (inviteData.role === 'guru' && inviteData.network_manager_user_id) {
-          // Fetch NM for territory (city)
-          const nmResult = await client.query(
-            'SELECT id, city FROM users WHERE id = $1 AND role = $2',
-            [inviteData.network_manager_user_id, 'network_manager']
-          );
-          const territoryName = nmResult.rowCount > 0 ? nmResult.rows[0].city : null;
-
-          // Pre-assign to Network Manager
-          await client.query(
-            `INSERT INTO guru_network_manager 
-     (guru_user_id, network_manager_user_id, territory_name, assigned_at, assigned_by)
-     VALUES ($1, $2, $3, NOW(), $4)
-     ON CONFLICT (guru_user_id) DO UPDATE SET
-       network_manager_user_id = EXCLUDED.network_manager_user_id,
-       territory_name = EXCLUDED.territory_name,
-       assigned_at = NOW()
-    `,
-            [
-              user.id,
-              inviteData.network_manager_user_id,
-              territoryName,
-              inviteData.created_by  // Admin who created invite
-            ]
-          );
-
-          // Create guru_application so user goes through activation fee + approval flow
-          await client.query(
-            `INSERT INTO guru_applications
-       (user_id, network_manager_user_id, territory_name, agreed_to_terms, agreed_to_guru_agreement, account_status)
-     VALUES ($1, $2, $3, TRUE, TRUE, 'pending')
-     ON CONFLICT (user_id) DO NOTHING`,
-            [user.id, inviteData.network_manager_user_id, territoryName]
-          );
-        }
-
-
-        await client.query('COMMIT');
+        await pool.query(`UPDATE guru_invites SET used_at = NOW() WHERE id = $1`, [inviteData.id]);
       } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('Error processing invite:', err);
         // Continue with registration even if invite update fails
-      } finally {
-        client.release();
+        console.error('Error processing invite:', err);
       }
     }
 
@@ -1191,8 +1027,8 @@ async function register(req, res) {
       });
     }
 
-    // For Network Manager, Guru, and Promoter (non-invited), create OTP for email verification
-    if (isNetworkManagerRequest || isGuruRequest || isPromoterRequest) {
+    // For Guru and Promoter (non-invited), create OTP for email verification
+    if (isGuruRequest || isPromoterRequest) {
       const otpResult = await createOtp({
         email,
         purpose: "signup",
@@ -1200,13 +1036,11 @@ async function register(req, res) {
         userAgent: req.headers["user-agent"],
       });
 
-      const roleRequested = isNetworkManagerRequest ? "network_manager" : (isPromoterRequest ? "promoter" : "guru");
+      const roleRequested = isPromoterRequest ? "promoter" : "guru";
 
       return res.status(201).json({
         error: false,
-        message: isGuruRequest
-          ? "Registration successful. Please verify your email with the OTP sent to your inbox."
-          : "Registration successful. Please verify your email with the OTP sent to your inbox.",
+        message: "Registration successful. Please verify your email with the OTP sent to your inbox.",
         data: {
           email,
           userId: user.user_no ?? user.id,
@@ -1346,34 +1180,21 @@ async function login(req, res) {
       });
     }
 
-    const isNetworkManagerApplicant = user.role === null || user.role === undefined;
+    if (user.role === "network_manager") {
+      return res.status(403).json({
+        error: true,
+        message: "The Network Manager role is no longer available. Please contact support.",
+        data: { email },
+      });
+    }
 
-    // Network Manager applicants: allow login only if email is verified (so they can check application status)
-    if (isNetworkManagerApplicant) {
-      if (user.email_status !== "verified") {
-        return res.status(403).json({
-          error: true,
-          message: "Please verify your email before logging in.",
-          data: { email },
-        });
-      }
-      // Allow account_status 'requested' or 'pending' for NM applicants
-      if (accountStatus !== "active" && accountStatus !== "requested" && accountStatus !== "pending") {
-        return res.status(403).json({
-          error: true,
-          message: "Your account is pending approval. You cannot login until your application is approved.",
-          data: { email },
-        });
-      }
-    } else {
-      // Non-NM applicants: block until account_status is active
-      if (accountStatus !== "active") {
-        return res.status(403).json({
-          error: true,
-          message: "Your account is pending approval. You cannot login until your application has been approved.",
-          data: { email },
-        });
-      }
+    // Block until account_status is active
+    if (accountStatus !== "active") {
+      return res.status(403).json({
+        error: true,
+        message: "Your account is pending approval. You cannot login until your application has been approved.",
+        data: { email },
+      });
     }
 
     // Check password
@@ -1419,13 +1240,12 @@ async function login(req, res) {
     );
 
     // Create session with JWT tokens
-    const sessionRoles = user.role ? [user.role] : ['network_manager_applicant'];
     const session = await createSession({
       userId: user.id,
       deviceId: deviceId || null,
       ip: req.ip,
       userAgent: req.headers["user-agent"],
-      roles: sessionRoles,
+      roles: [user.role],
       rolesVersion: user.roles_version || 1,
     });
 
@@ -1440,7 +1260,6 @@ async function login(req, res) {
         email,
         userId: user.user_no ?? user.id,
         accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
         "expires-at": session.expiresAt,
         setupRequired,
         accountStatus,
@@ -1467,7 +1286,7 @@ async function login(req, res) {
 /* =======================
    OAUTH REGISTER (Google/Facebook)
    POST /auth/oauth/register
-   Supports applicationData for approval-required roles (network_manager, guru, promoter)
+   Supports applicationData for approval-required roles (guru, promoter)
 ======================= */
 async function oauthRegister(req, res) {
   const client = await pool.connect();
@@ -1503,10 +1322,19 @@ async function oauthRegister(req, res) {
 
     const hasExplicitRole = !!(role_requested || role);
     const effectiveRole = role_requested || role || "buyer";
-    const isNetworkManagerRequest = effectiveRole === "network_manager";
+
+    if (effectiveRole === "network_manager") {
+      client.release();
+      return res.status(400).json({
+        error: true,
+        message: "The Network Manager role is no longer available.",
+        data: null,
+      });
+    }
+
     const isGuruRequest = effectiveRole === "guru";
     const isPromoterRequest = effectiveRole === "promoter";
-    const isApprovalRequired = isNetworkManagerRequest || isGuruRequest || isPromoterRequest;
+    const isApprovalRequired = isGuruRequest || isPromoterRequest;
 
     // Check if user exists
     const existingUserResult = await pool.query(
@@ -1557,19 +1385,9 @@ async function oauthRegister(req, res) {
       // Create new user
       isNewUser = true;
 
-      // Name is required for Network Manager registration (new users only)
-      if (isNetworkManagerRequest && (!name || typeof name !== "string" || name.trim().length < 2)) {
-        client.release();
-        return res.status(400).json({
-          error: true,
-          message: "Name is required for Network Manager registration and must be at least 2 characters long.",
-          data: { name: name || null },
-        });
-      }
-
       await client.query("BEGIN");
 
-      const initialRole = isNetworkManagerRequest || isGuruRequest ? null
+      const initialRole = isGuruRequest ? null
         : (isPromoterRequest ? "promoter" : "buyer");
       const accountStatus = isApprovalRequired ? "pending" : "active";
 
@@ -1590,68 +1408,22 @@ async function oauthRegister(req, res) {
       user = createResult.rows[0];
 
       // Create application records for approval-required roles
-      if (isNetworkManagerRequest) {
-        const { territory_name } = applicationData;
-        if (!territory_name) {
+      if (isGuruRequest) {
+        const { agreed_to_terms, agreed_to_guru_agreement } = applicationData;
+        if (!agreed_to_terms || !agreed_to_guru_agreement) {
           await client.query("ROLLBACK");
           client.release();
           return res.status(400).json({
             error: true,
-            message: "Territory name is required for Network Manager application.",
+            message: "Agreement to terms is required for Guru application.",
             data: null,
           });
         }
-        const nmAppResult = await client.query(
-          `INSERT INTO network_manager_applications
-            (user_id, territory_name, avatar_url, account_status)
-          VALUES ($1, $2, $3, 'pending')
-          RETURNING id`,
-          [user.id, territory_name, avatarUrl || null]
-        );
-        const nmApp = nmAppResult.rows[0];
-        await client.query(
-          `INSERT INTO wallets (user_id, balance_amount, currency) VALUES ($1, 0, 'GBP') ON CONFLICT (user_id) DO NOTHING`,
-          [user.id]
-        );
-        await client.query(
-          `INSERT INTO invoices (user_id, description, amount, currency, status, invoice_type, related_entity_type, related_entity_id)
-           VALUES ($1, 'Territory fee', 250000, 'GBP', 'pending', 'fee', 'network_manager_application', $2)`,
-          [user.id, nmApp.id]
-        );
-        await client.query(
-          "UPDATE users SET account_status = 'pending', updated_at = NOW() WHERE id = $1",
-          [user.id]
-        );
-      } else if (isGuruRequest) {
-        const { network_manager_user_id, agreed_to_terms, agreed_to_guru_agreement } = applicationData;
-        if (!network_manager_user_id || !agreed_to_terms || !agreed_to_guru_agreement) {
-          await client.query("ROLLBACK");
-          client.release();
-          return res.status(400).json({
-            error: true,
-            message: "Network Manager selection and agreement to terms are required for Guru application.",
-            data: null,
-          });
-        }
-        const nmResult = await client.query(
-          "SELECT id, name, city FROM users WHERE id = $1 AND role = 'network_manager'",
-          [network_manager_user_id]
-        );
-        if (nmResult.rowCount === 0) {
-          await client.query("ROLLBACK");
-          client.release();
-          return res.status(400).json({
-            error: true,
-            message: "Invalid Network Manager selection.",
-            data: null,
-          });
-        }
-        const territoryName = nmResult.rows[0].city || applicationData.territory_name || "Unknown";
         await client.query(
           `INSERT INTO guru_applications
-            (user_id, network_manager_user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status)
-          VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-          [user.id, network_manager_user_id, territoryName, avatarUrl || null, agreed_to_terms, agreed_to_guru_agreement]
+            (user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status)
+          VALUES ($1, $2, $3, $4, $5, 'pending')`,
+          [user.id, applicationData.territory_name || null, avatarUrl || null, agreed_to_terms, agreed_to_guru_agreement]
         );
       } else if (isPromoterRequest) {
         const { guru_user_id, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms } = applicationData;
@@ -1677,16 +1449,11 @@ async function oauthRegister(req, res) {
             data: null,
           });
         }
-        const territoryResult = await client.query(
-          `SELECT territory_name FROM guru_network_manager WHERE guru_user_id = $1`,
-          [guru_user_id]
-        );
-        const territoryName = territoryResult.rowCount > 0 ? territoryResult.rows[0].territory_name : null;
         await client.query(
           `INSERT INTO promoter_applications
-            (user_id, guru_user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
-          [user.id, guru_user_id, territoryName, avatarUrl || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
+            (user_id, guru_user_id, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
+          VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
+          [user.id, guru_user_id, avatarUrl || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
         );
         await client.query(
           `INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source) VALUES ($1, $2, 'application')
@@ -1702,25 +1469,14 @@ async function oauthRegister(req, res) {
       await client.query("COMMIT");
     }
 
-    // Users with NULL role (Network Manager, Guru applicants) cannot login
+    // Users with NULL role (Guru applicants) cannot login
     if (user.role === null || user.role === undefined) {
-      // Resolve actual pending role from application tables (not effectiveRole, which defaults to "buyer")
-      let pendingRole = effectiveRole;
-      const nmApp = await pool.query(
-        "SELECT id FROM network_manager_applications WHERE user_id = $1 LIMIT 1",
+      // Resolve actual pending role from the application table (not effectiveRole, which defaults to "buyer")
+      const guruApp = await pool.query(
+        "SELECT id FROM guru_applications WHERE user_id = $1 LIMIT 1",
         [user.id]
       );
-      if (nmApp.rowCount > 0) {
-        pendingRole = "network_manager";
-      } else {
-        const guruApp = await pool.query(
-          "SELECT id FROM guru_applications WHERE user_id = $1 LIMIT 1",
-          [user.id]
-        );
-        if (guruApp.rowCount > 0) {
-          pendingRole = "guru";
-        }
-      }
+      const pendingRole = guruApp.rowCount > 0 ? "guru" : effectiveRole;
       client.release();
       return res.json({
         error: false,
@@ -1731,6 +1487,15 @@ async function oauthRegister(req, res) {
           email,
           message: "Your application has been submitted. You cannot login until your application has been approved.",
         },
+      });
+    }
+
+    if (user.role === "network_manager") {
+      client.release();
+      return res.status(403).json({
+        error: true,
+        message: "The Network Manager role is no longer available. Please contact support.",
+        data: { email },
       });
     }
 
@@ -1771,7 +1536,6 @@ async function oauthRegister(req, res) {
         email,
         userId: user.user_no ?? user.id,
         accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
         "expires-at": session.expiresAt,
         setupRequired,
         accountStatus: user.account_status || "active",
@@ -1830,7 +1594,6 @@ async function oauthCallback(req, res) {
     if (user) {
       // Existing user - return tokens
       const accessToken = generateAccessToken(user);
-      const refreshToken = generateRefreshToken(user);
 
       return res.json({
         success: true,
@@ -1852,7 +1615,6 @@ async function oauthCallback(req, res) {
           accountStatus: user.account_status,
           setupRequired: user.setup_required,
           accessToken,
-          refreshToken,
           'expires-at': getTokenExpiry()
         }
       });
@@ -1966,7 +1728,7 @@ async function verifyEmail(req, res) {
     ]);
     const user = userResult.rows[0];
 
-    // Users with NULL role (Network Manager applicants) cannot login
+    // Users with no role yet (pending applications) cannot login
     if (user.role === null || user.role === undefined) {
       return res.status(403).json({
         error: true,
@@ -2000,7 +1762,6 @@ async function verifyEmail(req, res) {
         email: user.email,
         userId: user.user_no ?? user.id,
         accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
         "expires-at": session.expiresAt,
         user: {
           ...mapUserForResponse(user),
@@ -2270,45 +2031,6 @@ async function resendOtp(req, res) {
 }
 
 /* =======================
-   REFRESH TOKEN
-======================= */
-async function refreshToken(req, res) {
-  try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(400).json({
-        error: true,
-        message: "Refresh token is required.",
-        data: null,
-      });
-    }
-
-    const session = await refreshAccessToken(
-      refreshToken,
-      req.ip,
-      req.headers["user-agent"]
-    );
-
-    return res.json({
-      error: false,
-      message: "Tokens refreshed successfully.",
-      data: {
-        accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
-        "expires-at": session.expiresAt,
-      },
-    });
-  } catch (err) {
-    return res.status(401).json({
-      error: true,
-      message: err.message || "Invalid or expired refresh token.",
-      data: null,
-    });
-  }
-}
-
-/* =======================
    LOGOUT ALL DEVICES
 ======================= */
 async function logoutAll(req, res) {
@@ -2362,10 +2084,10 @@ async function setActiveRole(req, res) {
  *
  * This endpoint is deprecated. Use the new Guru registration flow:
  * 1. POST /api/gurus/activation-fee/commit with { choice: 'upfront' | 'negative_balance' }
- * 2. Wait for Network Manager or Admin approval
+ * 2. Wait for King's Account or Admin approval
  */
 async function guruCheckout(req, res) {
-  return fail(res, req, 410, "DEPRECATED", "This endpoint is deprecated. Use POST /api/gurus/activation-fee/commit with { choice: 'upfront' | 'negative_balance' }, then await approval from your Network Manager or Admin.");
+  return fail(res, req, 410, "DEPRECATED", "This endpoint is deprecated. Use POST /api/gurus/activation-fee/commit with { choice: 'upfront' | 'negative_balance' }, then await approval from the King's Account or an Admin.");
 }
 
 
@@ -2550,7 +2272,6 @@ async function kingsVerifyOtp(req, res) {
         email: user.email,
         role: "kings_account",
         accessToken: session.accessToken,
-        refreshToken: session.refreshToken,
         expiresAt: session.expiresAt,
       },
     });
@@ -3013,7 +2734,7 @@ async function resendPromoterReferralInvite(req, res) {
  * - Validate no duplicate email
  * 
  * Request: { name, email, password, phone, referral_token? }
- * Response: { access_token, refresh_token, user: { ...user_data, unlock_threshold: 575 } }
+ * Response: { access_token, user: { ...user_data, unlock_threshold: 575 } }
  * 
  * Error Responses:
  * - 400: Missing required fields
@@ -3232,7 +2953,6 @@ async function promoterRegisterViaReferral(req, res) {
       message: "Promoter registration successful.",
       data: {
         access_token: session.accessToken,
-        refresh_token: session.refreshToken,
         user: {
           id: user.id,
           name: user.name,
@@ -3367,11 +3087,11 @@ async function validateReferralToken(req, res) {
 }
 
 /**
- * POST /api/v1/network-managers/guru/invites
- * Create Guru Invite Token (Network Manager or Kings Account)
+ * POST /api/auth/gurus/invites
+ * Create Guru Invite Token (Kings Account, founder or admin)
  * 
  * Requirements:
- * - Only Network Managers and Kings Accounts can create Guru invites
+ * - Only Kings Accounts, founders and admins can create Guru invites
  * - Generate a signed invite token
  * - Store invite in guru_invites table with expiry
  * - Return invite token and registration URL
@@ -3381,18 +3101,18 @@ async function validateReferralToken(req, res) {
  */
 async function createGuruInvite(req, res) {
   try {
-    // AUTHORIZATION: Only network_manager or kings_account can create guru invites
-    const allowedRoles = ['network_manager', 'kings_account'];
+    // AUTHORIZATION: Only kings_account, founder or admin can create guru invites
+    const allowedRoles = ['kings_account', 'founder', 'admin'];
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
         error: true,
-        message: "Only Network Managers and Kings Accounts can create guru invites.",
+        message: "Only Kings Accounts, founders and admins can create guru invites.",
         data: null,
       });
     }
 
     const { email, expires_in_minutes = 15 } = req.body;
-    const networkManagerId = req.user.id;
+    const createdBy = req.user.id;
 
     // VALIDATION: Email is required
     if (!email || !isValidEmail(email)) {
@@ -3432,10 +3152,10 @@ async function createGuruInvite(req, res) {
 
     // Create invite record
     const inviteResult = await pool.query(
-      `INSERT INTO guru_invites (email, name, role, invite_token, network_manager_user_id, created_by, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO guru_invites (email, name, role, invite_token, created_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, invite_token, expires_at, email`,
-      [email, '', 'guru', inviteToken, networkManagerId, networkManagerId, expiresAt]
+      [email, '', 'guru', inviteToken, createdBy, expiresAt]
     );
 
     const invite = inviteResult.rows[0];
@@ -3527,10 +3247,8 @@ async function resendGuruInvite(req, res) {
     if (email) {
       // PREFERRED: Search by email (guru knows their own email)
       inviteResult = await pool.query(
-        `SELECT gi.*, u.name as created_by_name, nm.name as network_manager_name
+        `SELECT gi.*
          FROM guru_invites gi
-         LEFT JOIN users u ON u.id = gi.created_by
-         LEFT JOIN users nm ON nm.id = gi.network_manager_user_id
          WHERE gi.email = $1 AND gi.used_at IS NULL
          ORDER BY gi.created_at DESC
          LIMIT 1`,
@@ -3539,10 +3257,8 @@ async function resendGuruInvite(req, res) {
     } else {
       // FALLBACK: Search by old token
       inviteResult = await pool.query(
-        `SELECT gi.*, u.name as created_by_name, nm.name as network_manager_name
+        `SELECT gi.*
          FROM guru_invites gi
-         LEFT JOIN users u ON u.id = gi.created_by
-         LEFT JOIN users nm ON nm.id = gi.network_manager_user_id
          WHERE gi.invite_token = $1`,
         [invite_token]
       );
@@ -3551,7 +3267,7 @@ async function resendGuruInvite(req, res) {
     if (inviteResult.rowCount === 0) {
       return res.status(404).json({
         error: true,
-        message: "No invitation found. Please check your email. If you don't have an invitation, contact your Network Manager.",
+        message: "No invitation found. Please check your email. If you don't have an invitation, contact support.",
         data: { email: email || null },
       });
     }
@@ -3632,14 +3348,14 @@ async function resendGuruInvite(req, res) {
  * 
  * Requirements:
  * - Validate invite token: check not expired, check not already used
- * - Create user record with role = GURU and assign network_manager_id from token
+ * - Create user record with role = GURU
  * - Set credit_balance = -295 (via guru_profile), level = 1, sprint_active = false
- * - Return JWT access token and refresh token on success
+ * - Return JWT access token on success
  * - Invalidate invite token immediately after successful registration to prevent reuse
  * - Reject duplicate email registration
  * 
  * Request: { invite_token, name, contract_name, password, phone }
- * Response: { access_token, refresh_token, user: { id, name, email, role, network_manager_id, credit_balance: -295, level: 1, sprint_active: false } }
+ * Response: { access_token, user: { id, name, email, role, credit_balance: -295, level: 1, sprint_active: false } }
  * 
  * Error Responses:
  * - 400: Missing required fields
@@ -3650,7 +3366,10 @@ async function resendGuruInvite(req, res) {
 async function guruRegisterViaInvite(req, res) {
   const client = await pool.connect();
   try {
-    const { invite_token, name, contract_name, password, phone } = req.body;
+    const { invite_token, contract_name, password, phone, avatar_url } = req.body;
+    // `full_name` is accepted too, so this matches the self-registration application (POST /gurus/applications)
+    const name = req.body.name ?? req.body.full_name;
+    const avatarUrl = typeof avatar_url === "string" && avatar_url.trim() ? avatar_url.trim() : null;
 
     // VALIDATION: All fields are required
     const errors = [];
@@ -3665,8 +3384,8 @@ async function guruRegisterViaInvite(req, res) {
     if (errors.length > 0) {
       return res.status(400).json({
         error: true,
-        message: "Missing required fields.",
-        data: { 
+        message: `Please complete all required fields. ${errors.join(" ")}`,
+        data: {
           errors,
           invite_token: invite_token || null
         },
@@ -3678,8 +3397,8 @@ async function guruRegisterViaInvite(req, res) {
     if (passwordErrors.length > 0) {
       return res.status(400).json({
         error: true,
-        message: "Password does not meet strength requirements.",
-        data: { 
+        message: `Please choose a stronger password. ${passwordErrors.join(" ")}`,
+        data: {
           errors: passwordErrors,
           invite_token
         },
@@ -3701,10 +3420,7 @@ async function guruRegisterViaInvite(req, res) {
 
     // STEP 1: Validate invite token
     const inviteResult = await client.query(
-      `SELECT gi.*, u.name as network_manager_name 
-       FROM guru_invites gi
-       LEFT JOIN users u ON u.id = gi.network_manager_user_id
-       WHERE gi.invite_token = $1`,
+      `SELECT * FROM guru_invites WHERE invite_token = $1`,
       [invite_token]
     );
 
@@ -3712,7 +3428,7 @@ async function guruRegisterViaInvite(req, res) {
       client.release();
       return res.status(401).json({
         error: true,
-        message: "Invite token is invalid.",
+        message: "This invitation link is invalid or has been removed.",
         data: { invite_token },
       });
     }
@@ -3724,7 +3440,7 @@ async function guruRegisterViaInvite(req, res) {
       client.release();
       return res.status(410).json({
         error: true,
-        message: "Invite token has already been used and is no longer valid.",
+        message: "This invitation has already been accepted. Please log in to your account.",
         data: { invite_token },
       });
     }
@@ -3734,7 +3450,7 @@ async function guruRegisterViaInvite(req, res) {
       client.release();
       return res.status(410).json({
         error: true,
-        message: "Invite token has expired.",
+        message: "This invitation has expired. Please request a new invitation.",
         data: { invite_token },
       });
     }
@@ -3749,7 +3465,7 @@ async function guruRegisterViaInvite(req, res) {
       client.release();
       return res.status(409).json({
         error: true,
-        message: "Email address is already registered.",
+        message: "This email address is already registered. Please log in instead.",
         data: { email: inviteData.email },
       });
     }
@@ -3774,9 +3490,10 @@ async function guruRegisterViaInvite(req, res) {
          email_verified_at,
          guru_active,
          guru_active_until,
-         guru_activation_date
+         guru_activation_date,
+         avatar_url
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), TRUE, NOW() + INTERVAL '1 year', NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), TRUE, NOW() + INTERVAL '1 year', NOW(), $9)
        RETURNING *`,
       [
         inviteData.email,
@@ -3786,7 +3503,8 @@ async function guruRegisterViaInvite(req, res) {
         'guru',
         'active',
         'active', // Guru from invite is active immediately
-        'verified' // Email is verified via invite
+        'verified', // Email is verified via invite
+        avatarUrl
       ]
     );
 
@@ -3812,39 +3530,21 @@ async function guruRegisterViaInvite(req, res) {
     const guruProfile = guruProfileResult.rows[0];
     // console.log(`[GURU REGISTER] Guru profile created: ${guruProfile.id}`);
 
-    // STEP 4: Assign network_manager_id from invite token
-    if (inviteData.network_manager_user_id) {
-      // console.log(`[GURU REGISTER] Assigning network manager ${inviteData.network_manager_user_id}`);
-      // Check if guru_network_manager table exists, otherwise use user.network_id
-      try {
-        await client.query(
-          `INSERT INTO guru_network_manager (guru_user_id, network_manager_user_id, assigned_at, assigned_by)
-           VALUES ($1, $2, NOW(), $3)
-           ON CONFLICT (guru_user_id) DO UPDATE SET network_manager_user_id = EXCLUDED.network_manager_user_id, assigned_at = NOW()`,
-          [user.id, inviteData.network_manager_user_id, inviteData.created_by]
-        );
-        // console.log(`[GURU REGISTER] Network manager assigned successfully`);
-      } catch (err) {
-        // guru_network_manager table might not exist, log warning and continue
-        console.warn("Note: guru_network_manager assignment skipped (table may not exist):", err.message);
-      }
-    }
-
-    // STEP 4B: Store Guru application metadata from invite registration
+    // STEP 4: Store Guru application metadata from invite registration
     await client.query(
       `INSERT INTO guru_applications
-        (user_id, network_manager_user_id, contract_name, phone, agreed_to_terms, agreed_to_guru_agreement, account_status, reviewed_at, created_at, updated_at)
+        (user_id, contract_name, phone, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status, reviewed_at, created_at, updated_at)
        VALUES ($1, $2, $3, $4, TRUE, TRUE, 'approved', NOW(), NOW(), NOW())
        ON CONFLICT (user_id) DO UPDATE
        SET contract_name = EXCLUDED.contract_name,
            phone = EXCLUDED.phone,
-           network_manager_user_id = EXCLUDED.network_manager_user_id,
+           avatar_url = COALESCE(EXCLUDED.avatar_url, guru_applications.avatar_url),
            updated_at = NOW()`,
       [
         user.id,
-        inviteData.network_manager_user_id || null,
         contract_name.trim(),
         phone,
+        avatarUrl,
       ]
     );
 
@@ -3912,18 +3612,16 @@ async function guruRegisterViaInvite(req, res) {
     // STEP 7: Return response per API contract
     return res.status(201).json({
       error: false,
-      message: "Registration successful! You are now logged in. Complete your profile to get started.",
+      message: "Your Guru account has been created. Welcome aboard! You are now logged in.",
       data: {
         access_token: session.accessToken,
-        refresh_token: session.refreshToken,
         user: {
           id: user.id,
           name: user.name,
           email: user.email,
           phone: user.phone,
+          avatar_url: user.avatar_url,
           role: 'GURU',
-          network_manager_id: inviteData.network_manager_user_id || null,
-          network_manager_name: inviteData.network_manager_name || null,
           contract_name: contract_name.trim(),
           credit_balance: -295,
           level: 1,
@@ -3971,7 +3669,6 @@ module.exports = {
   verifyEmail,
   forgotPassword,
   resetPassword,
-  refreshToken,
   logoutAll,
   setActiveRole,
   // OTP verification

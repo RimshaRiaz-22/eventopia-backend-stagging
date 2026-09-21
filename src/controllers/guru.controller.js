@@ -17,9 +17,9 @@ async function getMyRewards(req, res) {
       [req.user.id]
     );
 
-    return ok(res, req, "Guru rewards retrieved", {
+    return ok(res, req, {
       vouchers: result.rows
-    });
+    }, "Guru rewards retrieved");
 
   } catch (err) {
     console.error('Get guru rewards error:', err);

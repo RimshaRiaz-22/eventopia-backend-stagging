@@ -3,10 +3,9 @@ const pool = require("../db");
 const { UNLOCK_THRESHOLD } = require("./promoterCreditWallet.service");
 const { countSettledTicketsForPromoter, countSettledTicketsForGuru } = require("./settledTicket.service");
 
-const WALLET_ROLES = ["promoter", "guru", "network_manager"];
+const WALLET_ROLES = ["promoter", "guru"];
 
 const SPRINT_TICKETS_REQUIRED = 5000;
-const NM_LICENCE_FEE_GBP_DEFAULT = 2500;
 
 function penceToGbp(pence) {
   const n = Number(pence);
@@ -29,13 +28,13 @@ function isWalletAccessBlocked(userRoles) {
 }
 
 /**
- * First wallet-eligible role (promoter → guru → network_manager) that has a credit_wallets row.
+ * First wallet-eligible role (promoter → guru) that has a credit_wallets row.
  * @param {number} userId
  * @param {string[]} userRoles
  * @returns {Promise<string|null>}
  */
 async function resolveWalletRole(userId, userRoles) {
-  const order = ["promoter", "guru", "network_manager"];
+  const order = ["promoter", "guru"];
   for (const role of order) {
     if (!userRoles.includes(role)) continue;
     const w = await pool.query(`SELECT 1 FROM credit_wallets WHERE user_id = $1 AND role = $2 LIMIT 1`, [
@@ -117,34 +116,6 @@ async function loadGuruMeta(userId) {
     ? Number(tl.rows[0].service_fee_rate_current)
     : level >= 3 ? 0.15 : level >= 2 ? 0.15 : 0.2;
   return { level, territoryId, serviceFeeRate };
-}
-
-async function loadNetworkManagerMeta(userId) {
-  const tl = await pool.query(
-    `SELECT licence_fee_amount_snapshot, licence_balance_remaining, territory_id, service_fee_rate_current
-     FROM territory_licences
-     WHERE user_id = $1 AND licence_status IN ('ACTIVE', 'CLEARED')
-     ORDER BY updated_at DESC NULLS LAST
-     LIMIT 1`,
-    [userId]
-  );
-  if (tl.rowCount === 0) {
-    return {
-      territoryId: null,
-      licenceOwedGbp: NM_LICENCE_FEE_GBP_DEFAULT,
-      licenceRemainingGbp: NM_LICENCE_FEE_GBP_DEFAULT,
-      serviceFeeRate: 0.2,
-    };
-  }
-  const row = tl.rows[0];
-  const owed = penceToGbp(row.licence_fee_amount_snapshot);
-  const remaining = penceToGbp(row.licence_balance_remaining);
-  return {
-    territoryId: row.territory_id,
-    licenceOwedGbp: owed || NM_LICENCE_FEE_GBP_DEFAULT,
-    licenceRemainingGbp: remaining,
-    serviceFeeRate: Number(row.service_fee_rate_current) || 0.2,
-  };
 }
 
 function quarterWindowUtc() {
@@ -250,69 +221,47 @@ async function getWalletMeForUser(userId, userRoles) {
     return { ok: true, body: base };
   }
 
-  if (walletRole === "guru") {
-    const meta = await loadGuruMeta(userId);
-    base.level = meta.level;
-    base.territory_id = meta.territory_id != null ? String(meta.territory_id) : null;
-    base.service_fee.rate = meta.serviceFeeRate;
-    base.unlock_status = { unlocked: true };
+  // Only guru wallets remain after the promoter branch
+  const meta = await loadGuruMeta(userId);
+  base.level = meta.level;
+  base.territory_id = meta.territory_id != null ? String(meta.territory_id) : null;
+  base.service_fee.rate = meta.serviceFeeRate;
+  base.unlock_status = { unlocked: true };
 
-    if (meta.level >= 3) {
-      const nw = Number((confirmedGbp * 0.5).toFixed(2));
-      base.balances.net_withdrawable = nw;
-      base.withdrawal_eligibility = {
-        eligible_percent: 50,
-        withdrawable_amount: nw,
-        reason: "50% of confirmed credit withdrawable monthly",
-      };
-    } else if (meta.level === 2) {
-      base.balances.sprint_credit = confirmedGbp;
-      base.balances.net_withdrawable = 0;
-      base.withdrawal_eligibility = {
-        eligible_percent: 0,
-        reason: "No cash withdrawal at Level 2 without enhanced licence. All confirmed credit held as sprint credit.",
-      };
-      const { windowStart, windowExpires } = quarterWindowUtc();
-      const ticketsInWindow = await countSettledTicketsForGuru(userId, windowStart.toISOString(), new Date().toISOString());
-      const daysRemaining = Math.max(0, Math.ceil((windowExpires - Date.now()) / 86400000));
-      base.sprint = {
-        active: true,
-        tickets_in_window: ticketsInWindow,
-        tickets_required: SPRINT_TICKETS_REQUIRED,
-        progress_percent: Number(Math.min(100, (ticketsInWindow / SPRINT_TICKETS_REQUIRED) * 100).toFixed(1)),
-        window_start: windowStart.toISOString(),
-        window_expires: windowExpires.toISOString(),
-        days_remaining: daysRemaining,
-      };
-    } else {
-      base.balances.net_withdrawable = 0;
-      base.withdrawal_eligibility = {
-        eligible_percent: 0,
-        reason: "Withdrawals not available at Level 1",
-      };
-    }
-    return { ok: true, body: base };
+  if (meta.level >= 3) {
+    const nw = Number((confirmedGbp * 0.5).toFixed(2));
+    base.balances.net_withdrawable = nw;
+    base.withdrawal_eligibility = {
+      eligible_percent: 50,
+      withdrawable_amount: nw,
+      reason: "50% of confirmed credit withdrawable monthly",
+    };
+  } else if (meta.level === 2) {
+    base.balances.sprint_credit = confirmedGbp;
+    base.balances.net_withdrawable = 0;
+    base.withdrawal_eligibility = {
+      eligible_percent: 0,
+      reason: "No cash withdrawal at Level 2 without enhanced licence. All confirmed credit held as sprint credit.",
+    };
+    const { windowStart, windowExpires } = quarterWindowUtc();
+    const ticketsInWindow = await countSettledTicketsForGuru(userId, windowStart.toISOString(), new Date().toISOString());
+    const daysRemaining = Math.max(0, Math.ceil((windowExpires - Date.now()) / 86400000));
+    base.sprint = {
+      active: true,
+      tickets_in_window: ticketsInWindow,
+      tickets_required: SPRINT_TICKETS_REQUIRED,
+      progress_percent: Number(Math.min(100, (ticketsInWindow / SPRINT_TICKETS_REQUIRED) * 100).toFixed(1)),
+      window_start: windowStart.toISOString(),
+      window_expires: windowExpires.toISOString(),
+      days_remaining: daysRemaining,
+    };
+  } else {
+    base.balances.net_withdrawable = 0;
+    base.withdrawal_eligibility = {
+      eligible_percent: 0,
+      reason: "Withdrawals not available at Level 1",
+    };
   }
-
-  /* network_manager */
-  const nm = await loadNetworkManagerMeta(userId);
-  base.level = 1;
-  base.territory_id = nm.territoryId != null ? String(nm.territoryId) : null;
-  base.service_fee.rate = nm.serviceFeeRate;
-  base.balances.licence_owed = nm.licenceOwedGbp;
-  base.balances.licence_remaining = nm.licenceRemainingGbp;
-  base.balances.net_withdrawable = nm.licenceRemainingGbp <= 0 ? Number((confirmedGbp * 0.5).toFixed(2)) : 0;
-  base.withdrawal_eligibility =
-    nm.licenceRemainingGbp > 0
-      ? {
-          eligible_percent: 0,
-          reason: `Licence fee of £${nm.licenceOwedGbp.toFixed(2)} not yet cleared from credit`,
-        }
-      : {
-          eligible_percent: 50,
-          withdrawable_amount: base.balances.net_withdrawable,
-          reason: "50% of confirmed credit withdrawable monthly",
-        };
   return { ok: true, body: base };
 }
 

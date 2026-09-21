@@ -769,11 +769,11 @@ class GuruService {
     ] = await Promise.all([
       pool.query(
         `SELECT u.id, u.user_no, u.name, u.email, u.avatar_url, u.account_status, u.role, u.city,
-                gnm.territory_name AS guru_territory_name
+                ga.territory_name AS guru_territory_name
            FROM users u
            LEFT JOIN LATERAL (
-             SELECT territory_name FROM guru_network_manager WHERE guru_user_id = $2 LIMIT 1
-           ) gnm ON TRUE
+             SELECT territory_name FROM guru_applications WHERE user_id = $2 LIMIT 1
+           ) ga ON TRUE
           WHERE u.id = $1`,
         [promoterId, guruId]
       ),

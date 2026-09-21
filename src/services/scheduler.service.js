@@ -3,9 +3,6 @@ const pool = require("../db");
 const { issueRewardsForEvent } = require('./reward.service');
 const { sendRewardNotificationEmails, sendVoucherExpiryReminderEmail } = require('./email.service');
 const { startJob, markJobSuccess, markJobFailed } = require('./jobMonitoring.service');
-const { expireHeldReservations } = require('./territoryReservation.service');
-const { runServiceFeeForMonth } = require('./serviceFeeJob.service');
-const { refreshAllGuruMetrics } = require('./guruMetrics.service');
 const { expireActivePromoterReferrals } = require("./promoterReferral.service");
 
 /**
@@ -117,26 +114,6 @@ async function expireReservations() {
     }
   } finally {
     client.release();
-  }
-}
-
-/**
- * Runs every minute to expire held territory reservations (Network Manager flow)
- */
-async function expireTerritoryReservations() {
-  let runId = null;
-  try {
-    runId = await startJob('expireTerritoryReservations');
-    const count = await expireHeldReservations();
-    if (count > 0) {
-      console.log(`Expired ${count} territory reservation(s)`);
-    }
-    await markJobSuccess(runId);
-  } catch (err) {
-    console.error("Error expiring territory reservations:", err);
-    if (runId) {
-      await markJobFailed(runId, err.message);
-    }
   }
 }
 
@@ -275,11 +252,6 @@ function initScheduler() {
     await expireReservations();
   });
 
-  // Run every minute - expire territory (Network Manager) reservations
-  cron.schedule("* * * * *", async () => {
-    await expireTerritoryReservations();
-  });
-
   // Run daily at midnight - expire vouchers
   cron.schedule("0 0 * * *", async () => {
     console.log("Running voucher expiry job...");
@@ -292,64 +264,18 @@ function initScheduler() {
     await sendVoucherExpiryReminders();
   });
 
-  // Run nightly at 2 AM - Guru metrics refresh (My Gurus dashboards)
-  cron.schedule("0 2 * * *", async () => {
-    let runId = null;
-    try {
-      runId = await startJob("refreshGuruMetrics");
-      console.log("Running guru metrics refresh job...");
-      await refreshAllGuruMetrics();
-      await markJobSuccess(runId);
-    } catch (err) {
-      console.error("Guru metrics refresh failed:", err);
-      if (runId) {
-        await markJobFailed(runId, err.message);
-      }
-    }
-  });
-
-  // Run 1st of each quarter (Jan, Apr, Jul, Oct) at 3 AM - Quarterly guru metrics snapshot for refund rate monitoring
-  cron.schedule("0 3 1 1,4,7,10 *", async () => {
-    let runId = null;
-    try {
-      const now = new Date();
-      const quarter = `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
-      runId = await startJob("refreshGuruMetricsQuarterly", { quarter });
-      console.log(`Running quarterly guru metrics snapshot (${quarter})...`);
-      await refreshAllGuruMetrics();
-      await markJobSuccess(runId);
-    } catch (err) {
-      console.error("Quarterly guru metrics snapshot failed:", err);
-      if (runId) {
-        await markJobFailed(runId, err.message);
-      }
-    }
-  });
-
-  // Run 1st of each month at 1 AM - Network Manager service fee (stub)
-  cron.schedule("0 1 1 * *", async () => {
-    const month = new Date().toISOString().slice(0, 7);
-    console.log(`Running service fee job for ${month}...`);
-    try {
-      await runServiceFeeForMonth(month);
-    } catch (err) {
-      console.error("Service fee job failed:", err);
-    }
-  });
-
   // Run daily at 1:30 AM - expire promoter referral windows
   cron.schedule("30 1 * * *", async () => {
     await expirePromoterReferralWindows();
   });
 
-  console.log("Event completion, reservation expiry, territory reservation expiry, voucher expiry, reminder, and service fee scheduler initialized");
+  console.log("Event completion, reservation expiry, voucher expiry, reminder, and referral window scheduler initialized");
 }
 
 module.exports = {
   initScheduler,
   completePastEvents,
   expireReservations,
-  expireTerritoryReservations,
   expireVouchers,
   sendVoucherExpiryReminders,
   expirePromoterReferralWindows,

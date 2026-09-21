@@ -15,13 +15,12 @@ class CommissionService {
   static async calculateOrderCommission(orderId) {
     const client = await pool.connect();
     try {
-      // Get order with event and promoter info (include network_manager_id for ledger)
+      // Get order with event and promoter info
       const orderResult = await client.query(
         `SELECT
            o.*,
            e.promoter_id,
            e.guru_id,
-           e.network_manager_id,
            e.id as event_id
          FROM orders o
          JOIN events e ON e.id = o.event_id
@@ -60,22 +59,12 @@ class CommissionService {
       const ticketCount = parseInt(ticketsResult.rows[0].ticket_count);
       const totalCommission = ticketCount * commissionRate;
 
-      let networkManagerId = order.network_manager_id || null;
-      if (!networkManagerId) {
-        const nmResult = await client.query(
-          "SELECT network_manager_user_id FROM guru_network_manager WHERE guru_user_id = $1",
-          [order.guru_id]
-        );
-        networkManagerId = nmResult.rows[0]?.network_manager_user_id || null;
-      }
-
       return {
         hasGuru: true,
         guruId: order.guru_id,
         promoterId: order.promoter_id,
         eventId: order.event_id,
         orderId: order.id,
-        networkManagerId,
         ticketCount: ticketCount,
         commissionRate: commissionRate,
         totalCommission: totalCommission,
@@ -139,14 +128,13 @@ class CommissionService {
       );
       const commissionRow = result.rows[0];
 
-      // Ledger: record allocations (guru_commission + network_manager_cash) for Phase 10
+      // Ledger: record guru commission allocation for Phase 10
       await PlatformLedgerService.recordCommissionAllocations(
         {
           orderId: calculation.orderId,
           eventId: calculation.eventId,
           promoterId: calculation.promoterId,
           guruId: calculation.guruId,
-          networkManagerId: calculation.networkManagerId || null,
           totalCommission: calculation.totalCommission,
           guruCommissionId: commissionRow.id,
         },

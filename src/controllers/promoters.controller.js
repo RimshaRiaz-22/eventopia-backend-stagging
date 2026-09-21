@@ -214,7 +214,7 @@ async function createApplication(req, res) {
       });
     }
 
-    // Create Guru-Promoter link (just like Guru creates link with Network Manager)
+    // Create Guru-Promoter link
     // Only allow creating the link if user doesn't have one yet (first-time application)
     const existingLink = await client.query(
       `SELECT * FROM promoter_guru_links WHERE promoter_user_id = $1`,
@@ -250,18 +250,12 @@ async function createApplication(req, res) {
       );
     }
 
-    // Get territory from Guru's Network Manager
+    // Territory comes from the Guru's own application
     const territoryResult = await client.query(
-      `SELECT gnm.territory_name
-       FROM guru_network_manager gnm
-       WHERE gnm.guru_user_id = $1`,
+      `SELECT territory_name FROM guru_applications WHERE user_id = $1`,
       [finalGuruId]
     );
-
-    let territoryName = null;
-    if (territoryResult.rowCount > 0) {
-      territoryName = territoryResult.rows[0].territory_name;
-    }
+    const territoryName = territoryResult.rows[0]?.territory_name ?? null;
 
     // Update user's profile fields captured during application
     if (full_name && String(full_name).trim()) {
@@ -358,11 +352,11 @@ async function getMyApplication(req, res) {
     // Get promoter application with Guru info
     const result = await pool.query(
       `SELECT pa.*, u.email, u.name, u.account_status as user_account_status,
-              g.name as guru_name, gnm.territory_name as guru_territory
+              g.name as guru_name, gga.territory_name as guru_territory
        FROM promoter_applications pa
        JOIN users u ON u.id = pa.user_id
        LEFT JOIN users g ON g.id = pa.guru_user_id
-       LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pa.guru_user_id
+       LEFT JOIN guru_applications gga ON gga.user_id = pa.guru_user_id
        WHERE pa.user_id = $1`,
       [userId]
     );
@@ -418,12 +412,12 @@ async function getMyProfile(req, res) {
     // Check if user has a promoter application or is an approved promoter
     const userResult = await pool.query(
       `SELECT u.*, pa.id as application_id, pa.account_status as application_status,
-              pgl.guru_user_id, gnm.territory_name,
+              pgl.guru_user_id, gga.territory_name,
               g.id as guru_id, g.name as guru_name, g.email as guru_email
        FROM users u
        LEFT JOIN promoter_applications pa ON pa.user_id = u.id
        LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-       LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
+       LEFT JOIN guru_applications gga ON gga.user_id = pgl.guru_user_id
        LEFT JOIN users g ON g.id = pgl.guru_user_id
        WHERE u.id = $1`,
       [userId]

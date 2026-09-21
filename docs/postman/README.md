@@ -6,9 +6,12 @@ This folder contains a **Postman Collection** for the Eventopia **Events module*
 
 1. Open **Postman**.
 2. Click **Import** (or File → Import).
-3. Drag and drop or choose:
-   - **`Eventopia-Events-API.postman_collection.json`**
-4. The collection **Eventopia Events API (by Role)** will appear in your sidebar.
+3. Drag and drop or choose one of:
+   - **`Eventopia_Final_API.postman_collection.json`** (recommended final consolidated collection)
+   - `Eventopia_API.postman_collection.json`
+   - `Eventopia_API_Collection.postman_collection.json`
+   - `Eventopia-Events-API.postman_collection.json`
+4. The selected collection will appear in your Postman sidebar.
 
 ## Collection structure
 
@@ -32,6 +35,10 @@ Edit the collection (or use an environment) and set:
 | `ticketTypeId` | `1` | Ticket type ID |
 | `shareToken` | (from private link) | Share token for private-link event |
 | `imageId` | (event_media id) | Gallery image ID for delete |
+
+For `Eventopia_Final_API.postman_collection.json`, defaults are:
+- `baseUrl = http://localhost:4000/api`
+- `accessToken = ""` (auto-filled by Login test script)
 
 **To set the token:** After logging in via `/api/auth/login`, copy the access token from the response into the `token` variable (collection or environment).
 

@@ -10,20 +10,17 @@ class PlatformLedgerService {
   static ALLOCATION_TYPES = [
     "promoter_commission",
     "guru_commission",
-    "network_manager_cash",
     "platform_profit",
     "charity_pot",
   ];
 
   /**
-   * Record a commission allocation: platform_ledger entry + ledger_allocations (guru_commission, network_manager_cash).
-   * NM commission = same amount as guru commission (sum of guru commissions in network is NM commission).
+   * Record a commission allocation: platform_ledger entry + ledger_allocations (guru_commission).
    * @param {Object} params
    * @param {number} params.orderId
    * @param {number} params.eventId
    * @param {number} params.promoterId
    * @param {number} params.guruId
-   * @param {number|null} params.networkManagerId - from event or guru_network_manager
    * @param {number} params.totalCommission - pence
    * @param {number} params.guruCommissionId - guru_commissions.id for reference
    * @param {Object} [client] - optional pg client for transaction
@@ -34,7 +31,6 @@ class PlatformLedgerService {
       eventId,
       promoterId,
       guruId,
-      networkManagerId,
       totalCommission,
       guruCommissionId,
     },
@@ -69,15 +65,6 @@ class PlatformLedgerService {
         [ledgerEntryId, guruId, totalCommission, guruCommissionId]
       );
 
-      if (networkManagerId && totalCommission > 0) {
-        await useClient.query(
-          `INSERT INTO ledger_allocations
-            (ledger_entry_id, allocation_type, beneficiary_type, beneficiary_id, amount, reference_id, reference_type)
-           VALUES ($1, 'network_manager_cash', 'network_manager', $2, $3, $4, 'guru_commission')`,
-          [ledgerEntryId, networkManagerId, totalCommission, guruCommissionId]
-        );
-      }
-
       if (!client) await useClient.query("COMMIT");
       return { ledgerEntryId };
     } catch (err) {
@@ -86,48 +73,6 @@ class PlatformLedgerService {
     } finally {
       if (release) useClient.release();
     }
-  }
-
-  /**
-   * Sum of network_manager_cash allocations for a network manager (commission total from ledger).
-   */
-  static async getNetworkManagerCommissionTotal(networkManagerId, dateFrom = null, dateTo = null) {
-    const params = [networkManagerId];
-    let where = "WHERE allocation_type = 'network_manager_cash' AND beneficiary_id = $1";
-    if (dateFrom) {
-      params.push(dateFrom);
-      where += ` AND la.created_at >= $${params.length}`;
-    }
-    if (dateTo) {
-      params.push(dateTo);
-      where += ` AND la.created_at <= $${params.length}`;
-    }
-    const result = await pool.query(
-      `SELECT COALESCE(SUM(la.amount), 0)::bigint as total
-       FROM ledger_allocations la
-       ${where}`,
-      params
-    );
-    return parseInt(result.rows[0].total, 10) || 0;
-  }
-
-  /**
-   * Sum of guru_commission allocations per guru (for a given network manager's gurus).
-   */
-  static async getGuruCommissionTotalsByGuru(guruIds) {
-    if (!guruIds || guruIds.length === 0) return {};
-    const placeholders = guruIds.map((_, i) => `$${i + 1}`).join(", ");
-    const result = await pool.query(
-      `SELECT beneficiary_id as guru_id, COALESCE(SUM(amount), 0)::bigint as total
-       FROM ledger_allocations
-       WHERE allocation_type = 'guru_commission' AND beneficiary_id IN (${placeholders})
-       GROUP BY beneficiary_id`,
-      guruIds
-    );
-    const map = {};
-    guruIds.forEach((id) => (map[id] = 0));
-    result.rows.forEach((r) => (map[r.guru_id] = parseInt(r.total, 10)));
-    return map;
   }
 
   /**

@@ -50,7 +50,7 @@ async function createCharityApplication(req, res) {
       promoterId
     );
 
-    return ok(res, req, { application }, 201);
+    return ok(res, req, { application }, "Charity application created successfully.", 201);
   } catch (err) {
     console.error('Create charity application error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", err.message);
@@ -207,7 +207,7 @@ async function submitApplication(req, res) {
     // Notify promoter
     await CharityNotificationService.notifyApplicationSubmitted(fullApplication, promoter);
 
-    return ok(res, req, { application }, 202);
+    return ok(res, req, { application }, "Charity application submitted for review.", 202);
   } catch (err) {
     console.error('Submit charity application error:', err);
     if (err.message === 'Application not found') {

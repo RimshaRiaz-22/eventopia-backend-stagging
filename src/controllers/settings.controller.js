@@ -91,7 +91,7 @@ async function verifyKingsTwofaCode({ email, twofaCode }) {
 /**
  * GET /api/v1/profile
  * Fetch current user profile (name, email, phone, role, territory, avatar)
- * Auth: JWT (Promoter, Guru, Network Manager, Buyer)
+ * Auth: JWT (Promoter, Guru, Buyer)
  */
 exports.getProfile = async (req, res) => {
   try {
@@ -101,7 +101,7 @@ exports.getProfile = async (req, res) => {
     const userResult = await pool.query(
       `SELECT id, name, email, phone, role, territory_id, avatar_url
        FROM users
-       WHERE id = $1 AND LOWER(role) IN ('promoter', 'guru', 'network_manager', 'buyer')`,
+       WHERE id = $1 AND LOWER(role) IN ('promoter', 'guru', 'buyer')`,
       [userId]
     );
 

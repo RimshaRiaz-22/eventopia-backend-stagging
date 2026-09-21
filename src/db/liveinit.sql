@@ -163,16 +163,15 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user
 CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token);
 
 /* ================================
-   Sessions table (updated for JWT + refresh tokens)
+   Sessions table (JWT access token; one row per login)
    ================================ */
 CREATE TABLE IF NOT EXISTS sessions (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
   device_id TEXT,
-  refresh_token_hash TEXT NOT NULL, -- Hashed refresh token
   access_token_jti TEXT, -- JWT ID for access token (for revocation tracking)
   created_at TIMESTAMP DEFAULT NOW(),
-  expires_at TIMESTAMP NOT NULL, -- Refresh token expiration
+  expires_at TIMESTAMP NOT NULL, -- Session expiration (same as access token expiry)
   revoked_at TIMESTAMP,
   revoked_reason TEXT,
   ip TEXT,
@@ -180,7 +179,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_refresh_token ON sessions(refresh_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(user_id, device_id);
 
 /* ================================

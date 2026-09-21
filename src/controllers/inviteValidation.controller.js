@@ -35,7 +35,7 @@ async function validateInvite(req, res) {
 
     // Check if invite is expired
     if (new Date(invite.expires_at) < new Date()) {
-      return fail(res, req, 410, "INVITE_EXPIRED", "This invitation has expired. Please request a new invitation from your Network Manager or Admin");
+      return fail(res, req, 410, "INVITE_EXPIRED", "This invitation has expired. Please request a new invitation from the King's Account");
     }
 
     // Check if invite has already been used
@@ -56,7 +56,7 @@ async function validateInvite(req, res) {
       status: 'active'
     };
 
-    return ok(res, req, "Invitation is valid", inviteData);
+    return ok(res, req, inviteData, "Invitation verified successfully. You can now complete your registration.");
   } catch (err) {
     console.error('Validate invite error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to validate invitation");

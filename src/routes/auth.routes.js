@@ -13,7 +13,6 @@ const {
   verifyEmail,
   forgotPassword,
   resetPassword,
-  refreshToken,
   getMe,
   setActiveRole,
   logout,
@@ -42,7 +41,6 @@ router.post("/login", login);
 router.post("/verify-email", verifyEmail);
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
-router.post("/refresh", refreshToken);
 
 router.post("/otp/verify", verifyOtpEmail);
 router.post('/otp/resend', resendOtp)
@@ -66,7 +64,7 @@ router.post("/logout-all", requireAuth, logoutAll);
 router.post("/setup", requireAuth, setupAccount);
 router.patch("/me", requireAuth, updateProfile);
 
-router.post("/network-managers/guru/invites", requireAuth, createGuruInvite);
+router.post("/gurus/invites", requireAuth, createGuruInvite);
 
 router.post("/guru/invites/resend", resendGuruInvite);
 

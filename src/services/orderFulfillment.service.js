@@ -14,7 +14,7 @@ function generateTicketCode() {
  * Caller must hold a row lock on the order (e.g. FOR UPDATE) and an open transaction on `client`.
  *
  * @param {import("pg").PoolClient} client
- * @param {object} order — row from SELECT o.* ... JOIN events e (territory_id, promoter_id, guru_id, network_manager_id, event_id)
+ * @param {object} order — row from SELECT o.* ... JOIN events e (territory_id, promoter_id, guru_id, event_id)
  * @param {number} orderId
  * @returns {Promise<{ alreadyConfirmed: boolean, order?: object, responseItems?: array, qtyByTierLabel?: object }>}
  */
@@ -173,7 +173,6 @@ async function runPostFulfillmentSideEffects(order, orderId, qtyByTierLabel) {
         quantity: qty,
         promoter_id: order.promoter_id,
         guru_id: order.guru_id,
-        network_manager_id: order.network_manager_id,
         territory_id: order.territory_id || 1,
         order_id: orderId,
       });

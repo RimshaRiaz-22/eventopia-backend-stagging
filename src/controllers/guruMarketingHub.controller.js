@@ -145,7 +145,7 @@ async function getMarketingHub(req, res) {
       }
     };
 
-    return ok(res, req, "Marketing Hub structure retrieved", marketingHub);
+    return ok(res, req, marketingHub, "The marketing hub has been fetched successfully.");
   } catch (err) {
     console.error('Get marketing hub error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve marketing hub");
@@ -237,7 +237,7 @@ async function getOnboardingChecklist(req, res) {
     const completedItems = checklist.items.filter(item => item.completed).length;
     checklist.completionPercentage = Math.round((completedItems / checklist.items.length) * 100);
 
-    return ok(res, req, "Onboarding checklist retrieved", checklist);
+    return ok(res, req, checklist, "Your onboarding checklist has been fetched successfully.");
   } catch (err) {
     console.error('Get onboarding checklist error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve checklist");
@@ -272,13 +272,13 @@ async function submitContent(req, res) {
 
     const submission = result.rows[0];
 
-    return ok(res, req, "Content submitted for review", {
+    return ok(res, req, {
       submissionId: submission.id,
       status: submission.status,
       submittedAt: submission.submitted_at,
       estimatedReviewTime: '2-3 business days',
       nextSteps: 'Your submission will be reviewed by our marketing team. You can track status below.'
-    }, 201);
+    }, "Content submitted for review", 201);
   } catch (err) {
     console.error('Submit content error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to submit content");
@@ -329,10 +329,10 @@ async function getMySubmissions(req, res) {
       rejected: submissions.filter(s => s.status === 'rejected').length
     };
 
-    return ok(res, req, "Submissions retrieved", {
+    return ok(res, req, {
       summary,
       submissions
-    });
+    }, "Your submissions have been fetched successfully.");
   } catch (err) {
     console.error('Get submissions error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve submissions");
@@ -363,12 +363,12 @@ async function requestCampaign(req, res) {
 
     const request = result.rows[0];
 
-    return ok(res, req, "Campaign request submitted", {
+    return ok(res, req, {
       requestId: request.id,
       status: request.status,
       estimatedCreditsNeeded: request.estimated_credits_needed,
       requestedAt: request.requested_at
-    }, 201);
+    }, "Campaign request submitted", 201);
   } catch (err) {
     console.error('Request campaign error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to request campaign");
@@ -401,7 +401,7 @@ async function getMyCampaignRequests(req, res) {
       creditsUsed: r.credits_used || 0
     }));
 
-    return ok(res, req, "Campaign requests retrieved", requests);
+    return ok(res, req, requests, "Your campaign requests have been fetched successfully.");
   } catch (err) {
     console.error('Get campaign requests error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve campaign requests");
@@ -465,11 +465,11 @@ async function getLeaderboard(req, res) {
       commissionEarned: Math.floor((parseInt(row.gross_sales) || 0) * 0.08) // 8% commission example
     }));
 
-    return ok(res, req, "Leaderboard retrieved", {
+    return ok(res, req, {
       period,
       leaderboard,
       generatedAt: new Date()
-    });
+    }, "The leaderboard has been fetched successfully.");
   } catch (err) {
     console.error('Get leaderboard error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve leaderboard");
@@ -584,7 +584,7 @@ async function getLevelInfo(req, res) {
       ]
     };
 
-    return ok(res, req, "Level information retrieved", levelFramework);
+    return ok(res, req, levelFramework, "Guru level information has been fetched successfully.");
   } catch (err) {
     console.error('Get level info error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve level information");
@@ -671,7 +671,7 @@ async function getSprintMode(req, res) {
       }
     };
 
-    return ok(res, req, "Sprint mode information retrieved", sprintMode);
+    return ok(res, req, sprintMode, "Sprint mode details have been fetched successfully.");
   } catch (err) {
     console.error('Get sprint mode error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve sprint mode information");

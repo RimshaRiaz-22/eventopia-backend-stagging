@@ -128,9 +128,29 @@ const ReferralService = require("../services/referral.service");
 const CommissionService = require("../services/commission.service");
 const { ensurePromoterCreditWallet } = require("../services/promoterCreditWallet.service");
 
+const PHONE_E164_REGEX = /^\+[1-9]\d{1,14}$/;
+
+/** Full name from the request body; `full_name` and `name` are both accepted. Returns null when absent. */
+function readFullName(body) {
+  const raw = body.full_name ?? body.name;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+/** Same rules the invite registration uses. Returns { status, message } or null when valid. */
+function validateProfileFields({ fullName, phone }) {
+  if (fullName && fullName.length < 2) {
+    return { status: 400, message: "Full name must be at least 2 characters long." };
+  }
+  if (phone && !PHONE_E164_REGEX.test(phone)) {
+    return { status: 422, message: "Phone number must be in E.164 format (e.g., +447911123456)." };
+  }
+  return null;
+}
+
 /**
  * Create Guru Application
  * POST /gurus/applications
+ * Body: { avatar_url?, full_name?, contract_name?, phone?, agreed_to_terms, agreed_to_guru_agreement }
  */
 async function createApplication(req, res) {
   const client = await pool.connect();
@@ -138,24 +158,16 @@ async function createApplication(req, res) {
     await client.query("BEGIN");
 
     const {
-      network_manager_user_id,
       avatar_url,
       contract_name,
+      phone,
       agreed_to_terms,
       agreed_to_guru_agreement,
     } = req.body;
+    const fullName = readFullName(req.body);
     const userId = req.user.id;
 
     // Validation
-    if (!network_manager_user_id) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Network Manager selection is required.",
-        data: null,
-      });
-    }
-
     if (!agreed_to_terms || !agreed_to_guru_agreement) {
       await client.query("ROLLBACK");
       return res.status(400).json({
@@ -165,21 +177,12 @@ async function createApplication(req, res) {
       });
     }
 
-    // Verify the user exists and has network_manager role, and get their territory
-    const nmResult = await client.query(
-      `
-      SELECT id, name, role, city
-      FROM users
-      WHERE id = $1 AND role = 'network_manager'
-      `,
-      [network_manager_user_id]
-    );
-
-    if (nmResult.rowCount === 0) {
+    const profileError = validateProfileFields({ fullName, phone });
+    if (profileError) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
+      return res.status(profileError.status).json({
         error: true,
-        message: "Invalid Network Manager selection.",
+        message: profileError.message,
         data: null,
       });
     }
@@ -199,28 +202,32 @@ async function createApplication(req, res) {
       });
     }
 
-    // Update user's avatar if provided
-    if (avatar_url) {
+    // Save the profile details on the user (same fields the invite registration collects)
+    if (avatar_url || fullName || phone) {
       await client.query(
-        "UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2",
-        [avatar_url, userId]
+        `UPDATE users
+         SET avatar_url = COALESCE($1, avatar_url),
+             name = COALESCE($2, name),
+             phone = COALESCE($3, phone),
+             updated_at = NOW()
+         WHERE id = $4`,
+        [avatar_url || null, fullName, phone || null, userId]
       );
     }
 
-    // Create Guru application with territory from Network Manager
+    // Create Guru application
     const appResult = await client.query(
       `
       INSERT INTO guru_applications
-        (user_id, network_manager_user_id, territory_name, avatar_url, contract_name, agreed_to_terms, agreed_to_guru_agreement, account_status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        (user_id, avatar_url, contract_name, phone, agreed_to_terms, agreed_to_guru_agreement, account_status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending')
       RETURNING *
       `,
       [
         userId,
-        network_manager_user_id,
-        nmResult.rows[0].city,
         avatar_url || null,
         contract_name || null,
+        phone || null,
         agreed_to_terms,
         agreed_to_guru_agreement,
       ]
@@ -247,10 +254,10 @@ async function createApplication(req, res) {
       data: {
         application: {
           id: application.id,
-          networkManagerId: network_manager_user_id,
-          networkManagerName: nmResult.rows[0].name,
-          territoryName: nmResult.rows[0].city,
+          fullName,
           contractName: application.contract_name,
+          phone: application.phone,
+          avatarUrl: application.avatar_url,
           accountStatus: application.account_status,
           createdAt: application.created_at,
         },
@@ -275,8 +282,18 @@ async function createApplication(req, res) {
  */
 async function updateMyApplication(req, res) {
   try {
-    const { avatar_url, contract_name, agreed_to_terms, agreed_to_guru_agreement } = req.body;
+    const { avatar_url, contract_name, phone, agreed_to_terms, agreed_to_guru_agreement } = req.body;
+    const fullName = readFullName(req.body);
     const userId = req.user.id;
+
+    const profileError = validateProfileFields({ fullName, phone });
+    if (profileError) {
+      return res.status(profileError.status).json({
+        error: true,
+        message: profileError.message,
+        data: null,
+      });
+    }
 
     // Get the user's application
     const appResult = await pool.query(
@@ -322,6 +339,11 @@ async function updateMyApplication(req, res) {
       updateValues.push(contract_name);
     }
 
+    if (phone !== undefined) {
+      updateFields.push(`phone = $${paramCount++}`);
+      updateValues.push(phone || null);
+    }
+
     if (agreed_to_terms !== undefined) {
       updateFields.push(`agreed_to_terms = $${paramCount++}`);
       updateValues.push(agreed_to_terms);
@@ -332,7 +354,8 @@ async function updateMyApplication(req, res) {
       updateValues.push(agreed_to_guru_agreement);
     }
 
-    if (updateFields.length === 0) {
+    // full_name lives on the user, not on the application row
+    if (updateFields.length === 0 && !fullName) {
       return res.status(400).json({
         error: true,
         message: "At least one field must be provided for update.",
@@ -354,11 +377,24 @@ async function updateMyApplication(req, res) {
       updateValues
     );
 
+    // Keep the user's own profile in step with the application
+    if (avatar_url !== undefined || fullName || phone !== undefined) {
+      await pool.query(
+        `UPDATE users
+         SET avatar_url = CASE WHEN $1::boolean THEN $2 ELSE avatar_url END,
+             name = COALESCE($3, name),
+             phone = CASE WHEN $4::boolean THEN $5 ELSE phone END,
+             updated_at = NOW()
+         WHERE id = $6`,
+        [avatar_url !== undefined, avatar_url || null, fullName, phone !== undefined, phone || null, userId]
+      );
+    }
+
     return res.json({
       error: false,
-      message: "Guru application updated successfully.",
+      message: "Your Guru application has been updated.",
       data: {
-        application: result.rows[0],
+        application: { ...result.rows[0], full_name: fullName },
       },
     });
   } catch (err) {
@@ -383,12 +419,11 @@ async function getMyApplication(req, res) {
     const appResult = await pool.query(
       `
       SELECT ga.id, ga.account_status, ga.created_at, ga.reviewed_at, ga.rejection_reason,
-             ga.network_manager_user_id, ga.avatar_url, ga.contract_name,
+             ga.avatar_url, ga.contract_name, ga.phone, ga.territory_name,
              ga.activation_fee_status, ga.activation_fee_balance, ga.activation_fee_payment_method,
-             ga.verification_status,
-             u.name as network_manager_name, u.city as network_manager_territory
+             ga.verification_status, u.name AS full_name
       FROM guru_applications ga
-      LEFT JOIN users u ON u.id = ga.network_manager_user_id
+      JOIN users u ON u.id = ga.user_id
       WHERE ga.user_id = $1
       `,
       [userId]
@@ -416,7 +451,7 @@ async function getMyApplication(req, res) {
 
     return res.json({
       error: false,
-      message: "Guru application retrieved successfully.",
+      message: "Your Guru application has been fetched successfully.",
       data: {
         application: {
           id: application.id,
@@ -425,17 +460,15 @@ async function getMyApplication(req, res) {
           reviewedAt: application.reviewed_at,
           rejectionReason: application.rejection_reason,
           avatarUrl: application.avatar_url,
+          fullName: application.full_name,
           contractName: application.contract_name,
+          phone: application.phone,
           activationFeeStatus: application.activation_fee_status,
           activationFeeBalance: application.activation_fee_balance != null ? Number(application.activation_fee_balance) : null,
           activationFeePaymentMethod: application.activation_fee_payment_method,
           verificationStatus: application.verification_status,
           nextStep,
-          networkManager: {
-            id: application.network_manager_user_id,
-            name: application.network_manager_name,
-          },
-          territoryName: application.network_manager_territory,
+          territoryName: application.territory_name,
         },
       },
     });
@@ -548,7 +581,7 @@ async function commitActivationFee(req, res) {
 
     return res.status(200).json({
       error: false,
-      message: "Activation fee commitment recorded successfully.",
+      message: "Your activation fee choice has been saved. Your application is now waiting for approval.",
       data: {
         activationFeeStatus: choice === "upfront" ? "committed_upfront" : "committed_negative_balance",
         activationFeeBalance: choice === "upfront" ? 0 : GURU_ACTIVATION_FEE_PENCE,
@@ -581,13 +614,10 @@ async function getMyProfile(req, res) {
     // Check if user is an approved Guru or has a pending Guru application
     const userResult = await pool.query(
       `
-      SELECT u.*, gnm.territory_name, gp.licence_balance,
-             nm.id as nm_id, nm.name as nm_name, nm.email as nm_email, nm.avatar_url as nm_avatar_url,
+      SELECT u.*, ga.territory_name, gp.licence_balance,
              ga.account_status as guru_application_status
       FROM users u
-      LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = u.id
       LEFT JOIN guru_profiles gp ON gp.user_id = u.id
-      LEFT JOIN users nm ON nm.id = gnm.network_manager_user_id
       LEFT JOIN guru_applications ga ON ga.user_id = u.id
       WHERE u.id = $1 AND (
         (u.role = 'guru' AND u.account_status = 'active')
@@ -610,7 +640,7 @@ async function getMyProfile(req, res) {
 
     return res.json({
       error: false,
-      message: "Guru profile retrieved successfully.",
+      message: "Your Guru profile has been fetched successfully.",
       data: {
         profile: {
           userId: guru.user_no ?? guru.id,
@@ -624,13 +654,6 @@ async function getMyProfile(req, res) {
           territory: {
             name: guru.territory_name,
           },
-          networkManager: guru.nm_id ? {
-            id: guru.nm_id,
-            name: guru.nm_name,
-            email: guru.nm_email,
-            avatarUrl: guru.nm_avatar_url,
-            territory: guru.territory_name,
-          } : null,
         },
       },
     });
@@ -696,7 +719,7 @@ async function setupAccount(req, res) {
 
     return res.json({
       error: false,
-      message: "Guru account setup completed successfully",
+      message: "Your account has been set up successfully.",
       data: {
         user: result.rows[0],
         setupRequired: false,
@@ -734,7 +757,7 @@ async function listPromoterApplications(req, res) {
 
     return res.json({
       error: false,
-      message: "Promoter applications retrieved successfully.",
+      message: "Promoter applications have been fetched successfully.",
       data: {
         applications: applications.map(app => ({
           id: app.id,
@@ -828,7 +851,7 @@ async function approvePromoterApplication(req, res) {
 
     return res.json({
       error: false,
-      message: "Promoter application approved successfully.",
+      message: "Promoter application approved. They can now sell tickets.",
       data: {
         application: { id: applicationId, accountStatus: 'approved' },
         user: {
@@ -1666,10 +1689,7 @@ async function getMyRewards(req, res) {
       [req.user.id]
     );
 
-    return ok(res, req, {
-      message: "Guru rewards retrieved",
-      vouchers: result.rows,
-    });
+    return ok(res, req, { vouchers: result.rows }, "Your rewards have been fetched successfully.");
   } catch (err) {
     console.error('Get guru rewards error:', err);
     return fail(res, req, 500, "INTERNAL_ERROR", "Failed to retrieve rewards");
@@ -1692,11 +1712,11 @@ async function listAvailableGurus(req, res) {
         u.name,
         u.email,
         u.avatar_url,
-        gnm.territory_name,
+        ga.territory_name,
         gl.level as guru_level,
         gr.referral_code
       FROM users u
-      JOIN guru_network_manager gnm ON gnm.guru_user_id = u.id
+      LEFT JOIN guru_applications ga ON ga.user_id = u.id
       LEFT JOIN guru_levels gl ON gl.guru_id = u.id AND gl.effective_until IS NULL
       LEFT JOIN guru_referrals gr ON gr.guru_id = u.id
       WHERE u.role = 'guru'
@@ -1707,7 +1727,7 @@ async function listAvailableGurus(req, res) {
     const queryParams = [];
 
     if (territory) {
-      query += ` AND gnm.territory_name ILIKE $1`;
+      query += ` AND ga.territory_name ILIKE $1`;
       queryParams.push(`%${territory}%`);
     }
 
@@ -1726,7 +1746,7 @@ async function listAvailableGurus(req, res) {
 
     return res.json({
       error: false,
-      message: "Gurus retrieved successfully.",
+      message: "Available Gurus have been fetched successfully.",
       data: {
         gurus,
         count: gurus.length

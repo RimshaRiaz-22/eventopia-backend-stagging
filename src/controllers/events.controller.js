@@ -63,28 +63,18 @@ async function getEventsColumnSet(client) {
 }
 
 /**
- * Helper function to derive hierarchy attribution from promoter
+ * Helper function to derive Guru attribution from promoter
  */
 async function deriveHierarchyFromPromoter(promoterId) {
   const result = await pool.query(
-    `SELECT
-      pgl.guru_user_id as guru_id,
-      gnm.network_manager_user_id as network_manager_id,
-      gnm.territory_id,
-      t.name as territory_name
+    `SELECT pgl.guru_user_id as guru_id
     FROM users u
     LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-    LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
-    LEFT JOIN territories t ON t.id = gnm.territory_id
     WHERE u.id = $1 AND u.role = 'promoter'`,
     [promoterId]
   );
 
-  if (result.rowCount === 0) {
-    return { guru_id: null, network_manager_id: null, territory_id: null };
-  }
-
-  return result.rows[0];
+  return result.rows[0] || { guru_id: null };
 }
 
 /**
@@ -139,7 +129,7 @@ async function createEvent(req, res) {
 
     const eventColumns = await getEventsColumnSet(client);
     const insertColumns = [
-      "promoter_id", "guru_id", "network_manager_id", "territory_id",
+      "promoter_id", "guru_id",
       "title", "description", "start_at", "end_at", "timezone",
       "format", "access_mode", "visibility", "share_token",
       "venue_name", "venue_address", "lat", "lng",
@@ -148,8 +138,6 @@ async function createEvent(req, res) {
     const insertValues = [
       promoterId,
       hierarchy.guru_id,
-      hierarchy.network_manager_id,
-      hierarchy.territory_id,
       title || null,
       description || null,
       startAt || null,

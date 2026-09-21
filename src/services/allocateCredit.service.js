@@ -1,5 +1,5 @@
 /**
- * Credit Allocation — creates projected credit for Promoter, Guru, Network Manager
+ * Credit Allocation — creates projected credit for Promoter and Guru
  * on every ticket purchase. Writes to credit_wallets (projected_balance) and ledger_entries (audit).
  */
 
@@ -11,25 +11,24 @@ const {
   REFERRAL_PER_TICKET_PENCE,
 } = require("./promoterReferral.service");
 
-// Per-ticket credit split in pence by tier (Promoter, Guru, Network Manager). Eventopia share not credited to a role.
+// Per-ticket credit split in pence by tier (Promoter, Guru). Eventopia share not credited to a role.
 const TIER_CREDIT_SPLITS_PENCE = {
-  1: { promoter: 50, guru: 30, network_manager: 10 },
-  2: { promoter: 65, guru: 40, network_manager: 15 },
-  3: { promoter: 95, guru: 55, network_manager: 20 },
-  4: { promoter: 130, guru: 75, network_manager: 25 },
-  5: { promoter: 180, guru: 100, network_manager: 35 },
-  6: { promoter: 250, guru: 140, network_manager: 50 },
+  1: { promoter: 50, guru: 30 },
+  2: { promoter: 65, guru: 40 },
+  3: { promoter: 95, guru: 55 },
+  4: { promoter: 130, guru: 75 },
+  5: { promoter: 180, guru: 100 },
+  6: { promoter: 250, guru: 140 },
 };
 
 /**
- * Allocate projected credit to promoter, guru, network_manager for a ticket purchase.
+ * Allocate projected credit to promoter and guru for a ticket purchase.
  * @param {Object} params
  * @param {number} params.event_id
  * @param {number} params.tier_label - 1-6
  * @param {number} params.quantity
  * @param {number} params.promoter_id
  * @param {number|null} params.guru_id
- * @param {number|null} params.network_manager_id
  * @param {number} params.territory_id
  * @param {number} [params.order_id] - for ledger reference
  * @param {Object} [options.client] - pg Client for transaction
@@ -41,7 +40,6 @@ async function allocateCredit(
     quantity,
     promoter_id,
     guru_id,
-    network_manager_id,
     territory_id,
     order_id = null,
   },
@@ -63,11 +61,6 @@ async function allocateCredit(
       role: "guru",
       user_id: guru_id,
       amount_pence: splits.guru * quantity,
-    },
-    {
-      role: "network_manager",
-      user_id: network_manager_id,
-      amount_pence: splits.network_manager * quantity,
     },
   ].filter((e) => e.user_id != null && e.amount_pence > 0);
 

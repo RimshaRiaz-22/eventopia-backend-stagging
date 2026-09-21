@@ -2,15 +2,10 @@ const express = require("express");
 const router = express.Router();
 const { requireAuth, requireFounderOrAdmin, requireRole } = require("../middlewares/auth.middleware");
 const {
-  approveGuruApplication,
-  approveNetworkManagerApplication,
-  rejectNetworkManagerApplication,
   approvePromoterApplication,
   getEventAuditLogs,
   getEventMetrics,
-  createGuruInvite,
-  listGurus,
-  getGuruDetails,
+  createPromoterInvite,
   activateGuru,
   updateGuruLevel,
   attachPromoterToGuru,
@@ -48,15 +43,21 @@ const {
   listTerritories,
   getTerritory,
   createTerritory,
-  getTerritoryLicences,
-  listTerritoryApplications,
-  approveTerritoryApplication,
-  rejectTerritoryApplication,
   updateTerritory,
-  suspendTerritoryLicence,
   getReferralPool,
   approveReferralPayoutByAdmin,
 } = require("../controllers/admin.controller");
+
+const {
+  listGurus,
+  getGuruDetails,
+  getGuruApplication,
+  updateGuru,
+  blockGuru,
+  unblockGuru,
+  deleteGuru,
+  updateApplicationStatus,
+} = require("../controllers/adminGuru.controller");
 
 const {
   getHealthSummary,
@@ -79,37 +80,29 @@ router.post("/kings-account/events/:eventId/cancel/approve", requireRole("kings_
 router.get("/referral-pool", requireRole("kings_account", "founder", "admin"), getReferralPool);
 router.post("/referrals/:id/approve-payout", requireRole("kings_account", "founder", "admin"), approveReferralPayoutByAdmin);
 
-// Territory licence inventory (King's Account / founder / admin)
+// Territories (King's Account / founder / admin)
 router.get("/territories", requireRole("kings_account", "founder", "admin"), listTerritories);
-router.get("/territories/:id/licences", requireRole("kings_account", "founder", "admin"), getTerritoryLicences);
 router.get("/territories/:id", requireRole("kings_account", "founder", "admin"), getTerritory);
 router.post("/territories", requireRole("kings_account", "founder", "admin"), createTerritory);
 router.patch("/territories/:id", requireRole("kings_account", "founder", "admin"), updateTerritory);
 
-// Territory applications (waitlist) (King's Account / founder / admin)
-router.get("/territory-applications", requireRole("kings_account", "founder", "admin"), listTerritoryApplications);
-router.post("/territory-applications/:id/approve", requireRole("kings_account", "founder", "admin"), approveTerritoryApplication);
-router.post("/territory-applications/:id/reject", requireRole("kings_account", "founder", "admin"), rejectTerritoryApplication);
-
-// Territory licences (King's Account / founder / admin)
-router.post("/territory-licences/:id/suspend", requireRole("kings_account", "founder", "admin"), suspendTerritoryLicence);
-
-// Network Manager approval / reject (King's Account / founder)
-router.post(
-  "/network-managers/:applicationId/approve",
-  requireRole("kings_account", "founder"),
-  approveNetworkManagerApplication
-);
-router.post(
-  "/network-managers/:applicationId/reject",
-  requireRole("kings_account", "founder"),
-  rejectNetworkManagerApplication
-);
+// Guru module (King's Account / founder / admin)
+// Add a Guru by invite: POST /auth/gurus/invites. Order matters: fixed paths before "/gurus/:guruId".
+const guruAdmin = requireRole("kings_account", "founder", "admin");
+router.post("/gurus/create-invite", guruAdmin, createPromoterInvite);
+router.get("/gurus", guruAdmin, listGurus);
+router.get("/gurus/:guruId", guruAdmin, getGuruDetails);
+router.patch("/gurus/:guruId", guruAdmin, updateGuru);
+router.patch("/gurus/:guruId/application-status", guruAdmin, updateApplicationStatus);
+router.delete("/gurus/:guruId", guruAdmin, deleteGuru);
+router.post("/gurus/:guruId/block", guruAdmin, blockGuru);
+router.post("/gurus/:guruId/unblock", guruAdmin, unblockGuru);
+router.post("/gurus/:guruId/level", guruAdmin, updateGuruLevel);
+router.post("/gurus/:guruId/promoters/:promoterId/attach", guruAdmin, attachPromoterToGuru);
+router.post("/gurus/:guruId/promoters/:promoterId/detach", guruAdmin, detachPromoterFromGuru);
+router.post("/gurus/:guruId/activate", guruAdmin, activateGuru);
 
 router.use(requireFounderOrAdmin);
-
-// Guru application approval
-router.post("/gurus/:applicationId/approve", approveGuruApplication);
 
 // Promoter application approval
 router.post("/promoters/:applicationId/approve", approvePromoterApplication);
@@ -121,15 +114,6 @@ router.get("/events/metrics", getEventMetrics);
 // Event completion and cancellation
 router.post("/events/:eventId/complete", completeEvent);
 router.post("/events/:eventId/cancel", cancelEvent);
-
-// Guru management routes (admin only)
-router.get("/gurus", listGurus);
-router.get("/gurus/:guruId", getGuruDetails);
-router.post("/gurus/create-invite", createGuruInvite);
-router.post("/gurus/:guruId/activate", activateGuru);
-router.post("/gurus/:guruId/level", updateGuruLevel);
-router.post("/gurus/:guruId/promoters/:promoterId/attach", attachPromoterToGuru);
-router.post("/gurus/:guruId/promoters/:promoterId/detach", detachPromoterFromGuru);
 
 // Promoter management routes (admin only)
 router.get("/promoters", listPromoters);

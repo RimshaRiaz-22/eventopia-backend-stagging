@@ -4,9 +4,10 @@ const authRoutes = require("./routes/auth.routes");
 const categoriesRoutes = require("./routes/categories.routes");
 const eventsRoutes = require("./routes/events.routes");
 const usersRoutes = require("./routes/users.routes");
-const apiRoutes = require("./routes"); // central router: mounts /auth, /network-managers, /territories, etc.
+const apiRoutes = require("./routes"); // central router: mounts /auth, /territories, etc.
 const { requestMeta } = require("./middlewares/requestMeta.middleware");
 const { trackEventView } = require("./middlewares/viewTracking.middleware");
+const { ensureMessage, notFound, errorHandler } = require("./middlewares/responseFormat.middleware");
 const { handleStripeOrdersWebhook } = require("./controllers/stripeWebhooks.controller");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
@@ -20,6 +21,7 @@ app.post(
   handleStripeOrdersWebhook
 );
 
+app.use(ensureMessage);
 app.use(express.json());
 app.use(cookieParser());
 app.use(requestMeta);
@@ -41,7 +43,7 @@ app.use("/categories", categoriesRoutes);
 app.use("/events", eventsRoutes);
 app.use("/users", usersRoutes);
 
-// New consolidated API router (all new routes, including /network-managers)
+// New consolidated API router (all new routes)
 app.use("/api", apiRoutes);
 
 app.get("/", (req, res) => {
@@ -56,6 +58,10 @@ app.get("/health", (req, res) => {
     version: process.env.npm_package_version || "1.0.0",
   });
 });
+
+// Unknown routes and unexpected errors also answer in the standard JSON shape
+app.use(notFound);
+app.use(errorHandler);
 
 // Initialize scheduler after app starts
 setTimeout(() => {
