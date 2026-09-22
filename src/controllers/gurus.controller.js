@@ -1738,6 +1738,7 @@ async function listAvailableGurus(req, res) {
     const gurus = result.rows.map(guru => ({
       id: guru.id,
       name: guru.name || guru.email,
+      email: guru.email,
       avatarUrl: guru.avatar_url,
       territory: guru.territory_name,
       level: guru.guru_level || 1,
