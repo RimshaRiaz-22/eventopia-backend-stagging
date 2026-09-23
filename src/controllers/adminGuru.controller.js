@@ -38,9 +38,15 @@ async function logGuruAction({ adminId, guruId, actionType, oldValue, newValue, 
   }
 }
 
+// Matches a Guru by id whether they're an approved/invited Guru (users.role = 'guru')
+// or still a pending applicant (has a guru_applications row but no role yet) —
+// same condition listGurus/getGuruDetails use, so lookups stay consistent across endpoints.
 async function findGuru(guruId) {
   const result = await pool.query(
-    `SELECT id, email, name, status, account_status FROM users WHERE id = $1 AND role = 'guru'`,
+    `SELECT u.id, u.email, u.name, u.status, u.account_status
+     FROM users u
+     LEFT JOIN guru_applications ga ON ga.user_id = u.id
+     WHERE u.id = $1 AND (u.role = 'guru' OR ga.id IS NOT NULL)`,
     [guruId]
   );
   return result.rows[0] || null;
@@ -73,7 +79,7 @@ const GURU_FROM = `
   LEFT JOIN guru_levels gl ON gl.guru_id = u.id AND gl.effective_until IS NULL`;
 
 function mapGuruRow(g) {
-  const fee = ["committed_upfront", "committed_negative_balance"].includes(g.activation_fee_status);
+  const fee = ["committed_upfront", "committed_negative_balance", "not_required"].includes(g.activation_fee_status);
   return {
     id: g.id,
     userNo: g.user_no ?? null,
@@ -102,7 +108,11 @@ function mapGuruRow(g) {
 }
 
 /**
- * List Gurus, including self-registered applicants who are waiting for a decision.
+ * List Gurus, including self-registered applicants and invited Gurus who are
+ * waiting for a decision or haven't accepted their invite yet — both get a
+ * real users/guru_applications row (account_status/applicationStatus: pending)
+ * the moment the King acts, so they're indistinguishable from any other
+ * pending Guru here and support the same Edit/Delete/Approve/Reject actions.
  * GET /admin/gurus?applicationStatus=pending|approved|rejected&status=active|blocked|inactive&search=&page=1&limit=20
  */
 async function listGurus(req, res) {
@@ -519,7 +529,10 @@ async function deleteGuru(req, res) {
     await client.query(`DELETE FROM guru_invites WHERE email = $1`, [guru.email]);
     await client.query(`DELETE FROM otps WHERE email = $1`, [guru.email]);
 
-    await client.query(`DELETE FROM users WHERE id = $1 AND role = 'guru'`, [guruId]);
+    // findGuru() above already confirmed this id is a real Guru (role='guru' or
+    // has a guru_applications row) — a pending Guru's role is still NULL until
+    // approved, so requiring role='guru' here would silently delete nothing.
+    await client.query(`DELETE FROM users WHERE id = $1`, [guruId]);
     await client.query("COMMIT");
 
     await logGuruAction({

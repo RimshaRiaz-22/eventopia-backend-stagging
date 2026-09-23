@@ -23,6 +23,7 @@ const {
   ensureShareableReferralLinkForPromoter,
 } = require("../services/promoterReferral.service");
 const { getWalletMeForUser } = require("../services/walletMe.service");
+const { getPendingGuruInviteLoginBlock } = require("../services/guruInviteStatus.service");
 function isValidEmail(email) {
   return /^(?!\.)(?!.*\.\.)([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email);
 }
@@ -1186,6 +1187,22 @@ async function login(req, res) {
         message: "The Network Manager role is no longer available. Please contact support.",
         data: { email },
       });
+    }
+
+    // A Guru invited by the King but not yet fully registered (no password_hash)
+    // needs a specific, actionable error — not the generic "pending approval"
+    // message below, which would otherwise fire first regardless of how far
+    // through the invite checkpoints they've gotten (see guruInviteStatus.service.js).
+    if (!user.password_hash) {
+      const inviteBlock = await getPendingGuruInviteLoginBlock(user);
+      if (inviteBlock) {
+        return res.status(403).json({
+          error: true,
+          message: inviteBlock.message,
+          code: inviteBlock.code,
+          data: inviteBlock.data,
+        });
+      }
     }
 
     // Block until account_status is active
@@ -3100,10 +3117,12 @@ async function validateReferralToken(req, res) {
  * Response: { invite_token, registration_url, email, expires_at }
  */
 async function createGuruInvite(req, res) {
+  const client = await pool.connect();
   try {
     // AUTHORIZATION: Only kings_account, founder or admin can create guru invites
     const allowedRoles = ['kings_account', 'founder', 'admin'];
     if (!allowedRoles.includes(req.user.role)) {
+      client.release();
       return res.status(403).json({
         error: true,
         message: "Only Kings Accounts, founders and admins can create guru invites.",
@@ -3111,11 +3130,12 @@ async function createGuruInvite(req, res) {
       });
     }
 
-    const { email, expires_in_minutes = 15 } = req.body;
+    const { email, name, contract_name, expires_in_minutes = 15 } = req.body;
     const createdBy = req.user.id;
 
     // VALIDATION: Email is required
     if (!email || !isValidEmail(email)) {
+      client.release();
       return res.status(400).json({
         error: true,
         message: "Valid email is required.",
@@ -3125,6 +3145,7 @@ async function createGuruInvite(req, res) {
 
     // VALIDATION: Expires in minutes must be positive (1-1440 = 1 minute to 24 hours)
     if (expires_in_minutes && (expires_in_minutes < 1 || expires_in_minutes > 1440)) {
+      client.release();
       return res.status(400).json({
         error: true,
         message: "Expires in minutes must be between 1 and 1440 (24 hours).",
@@ -3132,31 +3153,77 @@ async function createGuruInvite(req, res) {
       });
     }
 
-    // Check if email already exists
-    const existingUser = await pool.query(
-      "SELECT id FROM users WHERE email = $1",
+    const trimmedName = typeof name === "string" && name.trim() ? name.trim() : null;
+    const trimmedContractName = typeof contract_name === "string" && contract_name.trim() ? contract_name.trim() : null;
+
+    await client.query('BEGIN');
+
+    // A Guru invite creates a real (password-less) account immediately, so the
+    // King can see, edit, or delete it in the admin panel like any other Guru
+    // right away — it just can't log in until the invitee accepts and sets a
+    // password. If this email already has a real account (one with a password,
+    // or already role='guru'), block it; if it's only a still-pending
+    // placeholder from an earlier invite to the same email, reuse that row
+    // instead of creating a duplicate.
+    const existingUserResult = await client.query(
+      "SELECT id, password_hash, role FROM users WHERE email = $1",
       [email]
     );
 
-    if (existingUser.rowCount > 0) {
-      return res.status(409).json({
-        error: true,
-        message: "Email is already registered.",
-        data: { email },
-      });
+    let userId;
+    if (existingUserResult.rowCount > 0) {
+      const existing = existingUserResult.rows[0];
+      if (existing.password_hash || existing.role === 'guru') {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({
+          error: true,
+          message: "Email is already registered.",
+          data: { email },
+        });
+      }
+      userId = existing.id;
+      if (trimmedName) {
+        await client.query(`UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2`, [trimmedName, userId]);
+      }
+    } else {
+      const userInsert = await client.query(
+        `INSERT INTO users (email, password_hash, name, role, status, account_status, email_status)
+         VALUES ($1, NULL, $2, NULL, 'active', 'pending', 'pending')
+         RETURNING id`,
+        [email, trimmedName]
+      );
+      userId = userInsert.rows[0].id;
     }
+
+    // Pending Guru application so the King sees applicationStatus: pending and can
+    // approve/reject like any other applicant. activation_fee_status is set to
+    // 'not_required' because invited Gurus skip the £250 activation-fee flow
+    // entirely — approveGuruApplication's fee gate treats this the same as a
+    // committed fee.
+    await client.query(
+      `INSERT INTO guru_applications (user_id, contract_name, account_status, activation_fee_status, created_at, updated_at)
+       VALUES ($1, $2, 'pending', 'not_required', NOW(), NOW())
+       ON CONFLICT (user_id) DO UPDATE
+         SET contract_name = COALESCE(EXCLUDED.contract_name, guru_applications.contract_name),
+             updated_at = NOW()`,
+      [userId, trimmedContractName]
+    );
 
     // Generate invite token (UUID-like token)
     const inviteToken = require('crypto').randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + expires_in_minutes * 60 * 1000); // Convert minutes to milliseconds
 
-    // Create invite record
-    const inviteResult = await pool.query(
-      `INSERT INTO guru_invites (email, name, role, invite_token, created_by, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+    // Invite record — still the source of truth for the token/expiry the
+    // invitee uses to accept, and for resending.
+    const inviteResult = await client.query(
+      `INSERT INTO guru_invites (email, name, contract_name, role, invite_token, created_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, invite_token, expires_at, email`,
-      [email, '', 'guru', inviteToken, createdBy, expiresAt]
+      [email, trimmedName || '', trimmedContractName, 'guru', inviteToken, createdBy, expiresAt]
     );
+
+    await client.query('COMMIT');
 
     const invite = inviteResult.rows[0];
 
@@ -3185,6 +3252,7 @@ async function createGuruInvite(req, res) {
         sent_at: new Date(),
         expires_at: invite.expires_at,
         expires_in_minutes: expires_in_minutes,
+        guru_id: userId,
         // For testing/admin purposes only:
         invite_token: invite.invite_token,
         registration_url: registrationUrl,
@@ -3192,12 +3260,15 @@ async function createGuruInvite(req, res) {
     });
 
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error("Create guru invite error:", err);
     return res.status(500).json({
       error: true,
       message: "An error occurred while creating the guru invite.",
       data: null,
     });
+  } finally {
+    client.release();
   }
 }
 
@@ -3356,7 +3427,7 @@ async function resendGuruInvite(req, res) {
  * 
  * Request: { invite_token, name, contract_name, password, phone }
  * Response: { access_token, user: { id, name, email, role, credit_balance: -295, level: 1, sprint_active: false } }
- * 
+ *
  * Error Responses:
  * - 400: Missing required fields
  * - 401: Invite token invalid
@@ -3411,7 +3482,7 @@ async function guruRegisterViaInvite(req, res) {
       return res.status(422).json({
         error: true,
         message: "Phone number must be in E.164 format (e.g., +447911123456).",
-        data: { 
+        data: {
           phone,
           invite_token
         },
@@ -3455,13 +3526,28 @@ async function guruRegisterViaInvite(req, res) {
       });
     }
 
-    // Check if email from invite already exists
-    const existingUser = await client.query(
-      "SELECT id FROM users WHERE email = $1",
+    // The invite already created a real (password-less) placeholder account
+    // when the King sent it, so the King could see/edit/approve it beforehand.
+    // Find that row now instead of expecting none to exist.
+    const existingUserResult = await client.query(
+      "SELECT id, password_hash FROM users WHERE email = $1",
       [inviteData.email]
     );
 
-    if (existingUser.rowCount > 0) {
+    if (existingUserResult.rowCount === 0) {
+      client.release();
+      return res.status(404).json({
+        error: true,
+        message: "No account was found for this invitation. Please contact support.",
+        data: { email: inviteData.email },
+      });
+    }
+
+    const placeholderUser = existingUserResult.rows[0];
+
+    // A password already set means this account finished registration before
+    // (e.g. the invite was accepted already, or the email is a real, separate account).
+    if (placeholderUser.password_hash) {
       client.release();
       return res.status(409).json({
         error: true,
@@ -3470,33 +3556,58 @@ async function guruRegisterViaInvite(req, res) {
       });
     }
 
-    // STEP 2: Create user record with role = GURU
+    // If the King rejected or blocked this Guru before they accepted, don't let
+    // acceptance silently override that decision.
+    const applicationResult = await client.query(
+      `SELECT account_status FROM guru_applications WHERE user_id = $1`,
+      [placeholderUser.id]
+    );
+    if (applicationResult.rowCount > 0 && applicationResult.rows[0].account_status === "rejected") {
+      client.release();
+      return res.status(403).json({
+        error: true,
+        message: "This invitation was rejected by the King's Account. Please contact them for details.",
+        data: { email: inviteData.email },
+      });
+    }
+    const blockedUserResult = await client.query(
+      `SELECT account_status FROM users WHERE id = $1`,
+      [placeholderUser.id]
+    );
+    if (blockedUserResult.rows[0]?.account_status === "blocked") {
+      client.release();
+      return res.status(403).json({
+        error: true,
+        message: "This account has been blocked. Please contact support.",
+        data: { email: inviteData.email },
+      });
+    }
+
+    // STEP 2: Activate the placeholder user record with role = GURU
     await client.query('BEGIN');
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // console.log(`[GURU REGISTER] Creating user for email: ${inviteData.email}`);
+    // console.log(`[GURU REGISTER] Activating placeholder user for email: ${inviteData.email}`);
 
     const userResult = await client.query(
-      `INSERT INTO users (
-         email,
-         password_hash,
-         name,
-         phone,
-         role,
-         status,
-         account_status,
-         email_status,
-         email_verified_at,
-         guru_active,
-         guru_active_until,
-         guru_activation_date,
-         avatar_url
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), TRUE, NOW() + INTERVAL '1 year', NOW(), $9)
+      `UPDATE users SET
+         password_hash = $1,
+         name = $2,
+         phone = $3,
+         role = $4,
+         status = $5,
+         account_status = $6,
+         email_status = $7,
+         email_verified_at = COALESCE(email_verified_at, NOW()),
+         guru_active = TRUE,
+         guru_active_until = NOW() + INTERVAL '1 year',
+         guru_activation_date = NOW(),
+         avatar_url = COALESCE($8, avatar_url),
+         updated_at = NOW()
+       WHERE id = $9
        RETURNING *`,
       [
-        inviteData.email,
         passwordHash,
         name.trim(),
         phone,
@@ -3504,7 +3615,8 @@ async function guruRegisterViaInvite(req, res) {
         'active',
         'active', // Guru from invite is active immediately
         'verified', // Email is verified via invite
-        avatarUrl
+        avatarUrl,
+        placeholderUser.id,
       ]
     );
 
@@ -3518,27 +3630,38 @@ async function guruRegisterViaInvite(req, res) {
     // STEP 3: Create guru_profile with credit_balance = -295, level = 1
     // Note: credit_balance is stored in guru_profiles as licence_balance
     // According to API contract: credit_balance: -295, level: 1, sprint_active: false
-    // console.log(`[GURU REGISTER] Creating guru profile for user ${user.id}`);
-    
-    const guruProfileResult = await client.query(
-      `INSERT INTO guru_profiles (user_id, level, licence_balance, created_at)
-       VALUES ($1, $2, $3, NOW())
-       RETURNING *`,
-      [user.id, 1, -295]
+    // A profile may already exist if the King approved this application (via
+    // the normal approve endpoint) before the invitee accepted — don't duplicate it.
+    const existingGuruProfile = await client.query(
+      `SELECT id FROM guru_profiles WHERE user_id = $1 LIMIT 1`,
+      [user.id]
     );
+    if (existingGuruProfile.rowCount === 0) {
+      await client.query(
+        `INSERT INTO guru_profiles (user_id, level, licence_balance, created_at)
+         VALUES ($1, $2, $3, NOW())`,
+        [user.id, 1, -295]
+      );
+    }
+    // console.log(`[GURU REGISTER] Guru profile ensured for user ${user.id}`);
 
-    const guruProfile = guruProfileResult.rows[0];
-    // console.log(`[GURU REGISTER] Guru profile created: ${guruProfile.id}`);
-
-    // STEP 4: Store Guru application metadata from invite registration
+    // STEP 4: Store Guru application metadata from invite registration. A row
+    // may already exist here (created when the King sent the invite), so this
+    // must flip it from 'pending' to 'approved' on the UPDATE branch too —
+    // invited Gurus need no separate King approval once they accept.
     await client.query(
       `INSERT INTO guru_applications
-        (user_id, contract_name, phone, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status, reviewed_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, TRUE, TRUE, 'approved', NOW(), NOW(), NOW())
+        (user_id, contract_name, phone, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status, activation_fee_status, reviewed_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, TRUE, TRUE, 'approved', 'not_required', NOW(), NOW(), NOW())
        ON CONFLICT (user_id) DO UPDATE
        SET contract_name = EXCLUDED.contract_name,
            phone = EXCLUDED.phone,
            avatar_url = COALESCE(EXCLUDED.avatar_url, guru_applications.avatar_url),
+           agreed_to_terms = TRUE,
+           agreed_to_guru_agreement = TRUE,
+           account_status = 'approved',
+           activation_fee_status = COALESCE(guru_applications.activation_fee_status, 'not_required'),
+           reviewed_at = NOW(),
            updated_at = NOW()`,
       [
         user.id,

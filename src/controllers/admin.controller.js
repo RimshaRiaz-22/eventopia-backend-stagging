@@ -63,8 +63,9 @@ async function approveGuruApplication(req, res) {
       });
     }
 
-    // Activation fee gate: must have committed upfront or negative_balance
-    const validActivationStatuses = ["committed_upfront", "committed_negative_balance"];
+    // Activation fee gate: must have committed upfront/negative_balance, or be
+    // exempt entirely ('not_required' — Gurus invited by the King skip this fee).
+    const validActivationStatuses = ["committed_upfront", "committed_negative_balance", "not_required"];
     if (!application.activation_fee_status || !validActivationStatuses.includes(application.activation_fee_status)) {
       await client.query("ROLLBACK");
       return res.status(400).json({
@@ -87,8 +88,8 @@ async function approveGuruApplication(req, res) {
       [adminId, applicationId]
     );
 
-    // Wallet initialization: upfront = 0, negative_balance = -25000
-    const walletBalance = application.activation_fee_status === "committed_upfront" ? 0 : -25000;
+    // Wallet initialization: upfront/not_required = 0, negative_balance = -25000
+    const walletBalance = application.activation_fee_status === "committed_negative_balance" ? -25000 : 0;
     await client.query(
       `INSERT INTO wallets (user_id, balance_amount, currency)
        VALUES ($1, $2, 'GBP')
@@ -106,8 +107,8 @@ async function approveGuruApplication(req, res) {
       );
     }
 
-    // Update user: signup_fee_paid only for upfront
-    const signupFeePaid = application.activation_fee_status === "committed_upfront";
+    // Update user: signup_fee_paid for upfront and for invited Gurus (no fee owed)
+    const signupFeePaid = application.activation_fee_status !== "committed_negative_balance";
     const userResult = await client.query(
       `
       UPDATE users

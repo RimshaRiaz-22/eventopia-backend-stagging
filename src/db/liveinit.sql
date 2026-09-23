@@ -881,6 +881,7 @@ CREATE TABLE IF NOT EXISTS guru_invites (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   email TEXT NOT NULL,
   name TEXT NOT NULL,
+  contract_name TEXT,
   role TEXT NOT NULL DEFAULT 'guru',
   invite_token TEXT UNIQUE NOT NULL,
   network_manager_user_id BIGINT REFERENCES users(id),
