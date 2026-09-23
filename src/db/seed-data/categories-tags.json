@@ -1,0 +1,37 @@
+{
+  "categories": [
+    {
+      "name": "Nightlife",
+      "slug": "nightlife",
+      "sortOrder": 10,
+      "tags": [
+        { "name": "Clubbing", "slug": "clubbing", "sortOrder": 10 },
+        { "name": "Bars", "slug": "bars", "sortOrder": 20 },
+        { "name": "Live Music", "slug": "live-music", "sortOrder": 30 }
+      ],
+      "children": []
+    },
+    {
+      "name": "Sports",
+      "slug": "sports",
+      "sortOrder": 20,
+      "tags": [
+        { "name": "Football", "slug": "football", "sortOrder": 10 },
+        { "name": "Basketball", "slug": "basketball", "sortOrder": 20 },
+        { "name": "Running", "slug": "running", "sortOrder": 30 }
+      ],
+      "children": []
+    },
+    {
+      "name": "Conferences",
+      "slug": "conferences",
+      "sortOrder": 30,
+      "tags": [
+        { "name": "Tech", "slug": "tech", "sortOrder": 10 },
+        { "name": "Business", "slug": "business", "sortOrder": 20 }
+      ],
+      "children": []
+    }
+  ]
+}
+
