@@ -30,6 +30,11 @@ const {
   listAvailableGurus,
 } = require("../controllers/gurus.controller");
 const {
+  updatePromoter,
+  updatePromoterStatus,
+  deletePromoter,
+} = require("../controllers/guruPromoterManagement.controller");
+const {
   getMarketingHub,
   getOnboardingChecklist,
   submitContent,
@@ -67,6 +72,12 @@ router.get("/promoters/applications", requireRole('guru'), listPromoterApplicati
 router.post("/promoters/:applicationId/approve", requireRole('guru'), approvePromoterApplication);
 router.post("/dashboard/promoters/:promoterId/activate", requireRole('guru'), activatePendingPromoter);
 router.post("/promoters/:applicationId/reject", requireRole('guru'), rejectPromoterApplication);
+
+// Promoter management CRUD (Guru only). :promoterId is the id the dashboard list returns.
+// PATCH/DELETE on "/promoters/:promoterId" do not clash with the POST routes above.
+router.patch("/promoters/:promoterId/status", requireRole('guru'), updatePromoterStatus);
+router.patch("/promoters/:promoterId", requireRole('guru'), updatePromoter);
+router.delete("/promoters/:promoterId", requireRole('guru'), deletePromoter);
 
 // Dashboard routes (require active Guru)
 router.get("/dashboard/summary", requireGuru, getDashboardSummary);
