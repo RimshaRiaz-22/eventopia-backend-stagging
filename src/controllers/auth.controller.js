@@ -23,7 +23,13 @@ const {
   ensureShareableReferralLinkForPromoter,
 } = require("../services/promoterReferral.service");
 const { getWalletMeForUser } = require("../services/walletMe.service");
-const { getPendingGuruInviteLoginBlock } = require("../services/guruInviteStatus.service");
+const {
+  getPendingGuruInviteLoginBlock,
+  getPendingPromoterInviteLoginBlock,
+  getUnverifiedBuyerLoginBlock,
+  getIncompleteSelfRegisteredGuruLoginBlock,
+  getIncompleteSelfRegisteredPromoterLoginBlock,
+} = require("../services/guruInviteStatus.service");
 function isValidEmail(email) {
   return /^(?!\.)(?!.*\.\.)([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email);
 }
@@ -1194,7 +1200,9 @@ async function login(req, res) {
     // message below, which would otherwise fire first regardless of how far
     // through the invite checkpoints they've gotten (see guruInviteStatus.service.js).
     if (!user.password_hash) {
-      const inviteBlock = await getPendingGuruInviteLoginBlock(user);
+      const inviteBlock =
+        (await getPendingGuruInviteLoginBlock(user)) ||
+        (await getPendingPromoterInviteLoginBlock(user));
       if (inviteBlock) {
         return res.status(403).json({
           error: true,
@@ -1203,6 +1211,56 @@ async function login(req, res) {
           data: inviteBlock.data,
         });
       }
+    }
+
+    // A self-registered Guru ('requested') or Promoter ('pending') who hasn't finished
+    // onboarding (email not verified, or application not submitted) gets a specific
+    // error. The password is checked first so these details are only revealed to the
+    // real account owner; on a wrong password we fall through to the existing
+    // behaviour unchanged.
+    if ((accountStatus === "requested" || accountStatus === "pending") && user.password_hash) {
+      const passwordOk = await bcrypt.compare(password, user.password_hash);
+      if (passwordOk) {
+        const onboardingBlock =
+          (await getIncompleteSelfRegisteredGuruLoginBlock(user)) ||
+          (await getIncompleteSelfRegisteredPromoterLoginBlock(user));
+        if (onboardingBlock) {
+          // Email is already verified and the password just checked out, so let the
+          // client go straight to the application form: issue a normal session (same
+          // as verifyOtpEmail does for this buyer-role account) instead of a 2nd OTP.
+          if (onboardingBlock.code === "PROFILE_INCOMPLETE") {
+            const session = await createSession({
+              userId: user.id,
+              deviceId: deviceId || null,
+              ip: req.ip,
+              userAgent: req.headers["user-agent"],
+              roles: [user.role],
+              rolesVersion: user.roles_version || 1,
+            });
+            onboardingBlock.data.accessToken = session.accessToken;
+            onboardingBlock.data["expires-at"] = session.expiresAt;
+            onboardingBlock.data.user = { ...mapUserForResponse(user), role: user.role };
+          }
+          return res.status(403).json({
+            error: true,
+            message: onboardingBlock.message,
+            code: onboardingBlock.code,
+            data: onboardingBlock.data,
+          });
+        }
+      }
+    }
+
+    // A Buyer who never verified their email cannot log in yet. Same rule as above:
+    // only revealed after the password checks out.
+    const unverifiedBuyerBlock = user.password_hash ? getUnverifiedBuyerLoginBlock(user) : null;
+    if (unverifiedBuyerBlock && (await bcrypt.compare(password, user.password_hash))) {
+      return res.status(403).json({
+        error: true,
+        message: unverifiedBuyerBlock.message,
+        code: unverifiedBuyerBlock.code,
+        data: unverifiedBuyerBlock.data,
+      });
     }
 
     // Block until account_status is active
