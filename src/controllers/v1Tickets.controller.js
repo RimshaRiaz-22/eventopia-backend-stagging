@@ -47,7 +47,7 @@ async function purchaseTicketsV1(req, res) {
       await client.query("BEGIN");
 
       const eventResult = await client.query(
-        `SELECT id, promoter_id, guru_id, territory_id, status FROM events WHERE id = $1`,
+        `SELECT id, promoter_id, territory_id, status FROM events WHERE id = $1`,
         [eventId]
       );
       if (eventResult.rowCount === 0) {
@@ -161,7 +161,6 @@ async function purchaseTicketsV1(req, res) {
           tier_label,
           quantity: qty,
           promoter_id: event.promoter_id,
-          guru_id: event.guru_id,
           territory_id: territoryId,
           order_id: order.id,
         },

@@ -9,71 +9,9 @@ class PlatformLedgerService {
   static ENTRY_TYPES = ["Sale", "Fee", "Refund", "Payout", "Waiver"];
   static ALLOCATION_TYPES = [
     "promoter_commission",
-    "guru_commission",
     "platform_profit",
     "charity_pot",
   ];
-
-  /**
-   * Record a commission allocation: platform_ledger entry + ledger_allocations (guru_commission).
-   * @param {Object} params
-   * @param {number} params.orderId
-   * @param {number} params.eventId
-   * @param {number} params.promoterId
-   * @param {number} params.guruId
-   * @param {number} params.totalCommission - pence
-   * @param {number} params.guruCommissionId - guru_commissions.id for reference
-   * @param {Object} [client] - optional pg client for transaction
-   */
-  static async recordCommissionAllocations(
-    {
-      orderId,
-      eventId,
-      promoterId,
-      guruId,
-      totalCommission,
-      guruCommissionId,
-    },
-    client = null
-  ) {
-    const useClient = client || (await pool.connect());
-    const release = !client;
-    try {
-      if (!client) await useClient.query("BEGIN");
-
-      const ledgerResult = await useClient.query(
-        `INSERT INTO platform_ledger
-          (entity_type, entity_id, entry_type, amount, currency, description, order_id, event_id, promoter_id, metadata)
-         VALUES ('Order', $1, 'Sale', $2, 'GBP', $3, $4, $5, $6, $7)
-         RETURNING id`,
-        [
-          orderId,
-          totalCommission,
-          `Commission allocation for order ${orderId}`,
-          orderId,
-          eventId,
-          promoterId,
-          JSON.stringify({ guru_commission_id: guruCommissionId }),
-        ]
-      );
-      const ledgerEntryId = ledgerResult.rows[0].id;
-
-      await useClient.query(
-        `INSERT INTO ledger_allocations
-          (ledger_entry_id, allocation_type, beneficiary_type, beneficiary_id, amount, reference_id, reference_type)
-         VALUES ($1, 'guru_commission', 'guru', $2, $3, $4, 'guru_commission')`,
-        [ledgerEntryId, guruId, totalCommission, guruCommissionId]
-      );
-
-      if (!client) await useClient.query("COMMIT");
-      return { ledgerEntryId };
-    } catch (err) {
-      if (!client) await useClient.query("ROLLBACK");
-      throw err;
-    } finally {
-      if (release) useClient.release();
-    }
-  }
 
   /**
    * Get ledger entries with filters (for admin ledger view).

@@ -4,13 +4,9 @@ const pool = require("../db");
 const bcrypt = require("bcryptjs");
 const { generatePasswordResetToken } = require("../utils/crypto");
 const { ok, fail } = require("../utils/standardResponse");
-const GuruService = require("../services/guru.service");
-const ReferralService = require("../services/referral.service");
 const { sendPasswordResetEmail } = require("../services/email.service");
 const { sendOtpEmail } = require("../services/email.service");
 const {
-  sendGuruInviteEmail,
-  sendGuruInviteResendEmail,
   sendPromoterReferralInviteEmail,
   sendPromoterReferralInviteResendEmail,
 } = require("../services/inviteEmailService");
@@ -24,12 +20,10 @@ const {
 } = require("../services/promoterReferral.service");
 const { getWalletMeForUser } = require("../services/walletMe.service");
 const {
-  getPendingGuruInviteLoginBlock,
   getPendingPromoterInviteLoginBlock,
   getUnverifiedBuyerLoginBlock,
-  getIncompleteSelfRegisteredGuruLoginBlock,
   getIncompleteSelfRegisteredPromoterLoginBlock,
-} = require("../services/guruInviteStatus.service");
+} = require("../services/accountOnboardingStatus.service");
 function isValidEmail(email) {
   return /^(?!\.)(?!.*\.\.)([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email);
 }
@@ -332,35 +326,13 @@ async function getMe(req, res) {
       };
     }
 
-    // Get Guru application if exists
-    let guruApplication = null;
-    const guruAppResult = await pool.query(
-      `
-      SELECT ga.id, ga.account_status, ga.created_at, ga.reviewed_at, ga.territory_name
-      FROM guru_applications ga
-      WHERE ga.user_id = $1
-      `,
-      [req.user.id]
-    );
-
-    if (guruAppResult.rowCount > 0) {
-      guruApplication = {
-        id: guruAppResult.rows[0].id,
-        accountStatus: guruAppResult.rows[0].account_status,
-        createdAt: guruAppResult.rows[0].created_at,
-        reviewedAt: guruAppResult.rows[0].reviewed_at,
-        territoryName: guruAppResult.rows[0].territory_name,
-      };
-    }
-
     // Get Promoter application if exists
     let promoterApplication = null;
     const promoterAppResult = await pool.query(
       `
-      SELECT pa.id, pa.account_status, pa.created_at, pa.reviewed_at, pa.guru_user_id,
-             pa.territory_name, u.name as guru_name
+      SELECT pa.id, pa.account_status, pa.created_at, pa.reviewed_at,
+             pa.territory_name, pa.rejection_reason
       FROM promoter_applications pa
-      LEFT JOIN users u ON u.id = pa.guru_user_id
       WHERE pa.user_id = $1
       `,
       [req.user.id]
@@ -372,34 +344,13 @@ async function getMe(req, res) {
         accountStatus: promoterAppResult.rows[0].account_status,
         createdAt: promoterAppResult.rows[0].created_at,
         reviewedAt: promoterAppResult.rows[0].reviewed_at,
-        guru: {
-          id: promoterAppResult.rows[0].guru_user_id,
-          name: promoterAppResult.rows[0].guru_name,
-        },
+        rejectionReason: promoterAppResult.rows[0].rejection_reason,
         territoryName: promoterAppResult.rows[0].territory_name,
       };
     }
 
     let promoter = null;
     if (role === "promoter") {
-      const linkResult = await pool.query(
-        `SELECT pgl.guru_user_id, u.name AS guru_name
-         FROM promoter_guru_links pgl
-         LEFT JOIN users u ON u.id = pgl.guru_user_id
-         WHERE pgl.promoter_user_id = $1
-         LIMIT 1`,
-        [req.user.id]
-      );
-      const assignedGuru =
-        linkResult.rowCount > 0 && linkResult.rows[0].guru_user_id != null
-          ? {
-              id: linkResult.rows[0].guru_user_id,
-              name: linkResult.rows[0].guru_name,
-            }
-          : promoterApplication?.guru?.id != null
-            ? promoterApplication.guru
-            : null;
-
       let credit = null;
       const wm = await getWalletMeForUser(req.user.id, ["promoter"]);
       if (wm.ok) {
@@ -412,7 +363,6 @@ async function getMe(req, res) {
       promoter = {
         accountStatus: user.account_status || "active",
         applicationAccountStatus: promoterApplication?.accountStatus ?? null,
-        assignedGuru,
         credit,
       };
     }
@@ -428,14 +378,8 @@ async function getMe(req, res) {
           accountStatus: user.account_status || "active",
           emailStatus: user.email_status || "pending",
         },
-        guruApplication,
         promoterApplication,
         userPreferences, // ✅ includes city and interests for quick setup
-        // For Promoters, flatten hierarchy info to top level
-        ...(role === 'promoter' && promoterApplication ? {
-          guru_id: promoter?.assignedGuru?.id ?? promoterApplication.guru?.id,
-          territory_id: promoterApplication.territoryName,
-        } : {}),
         ...(promoter ? { promoter } : {}),
       },
     });
@@ -657,10 +601,8 @@ async function register(req, res) {
       name,
       city,
       deviceId,
-      guruCode,
       role,
       role_requested,
-      invite_token,
       device_token,
       referral_token,
       ref,
@@ -694,71 +636,23 @@ async function register(req, res) {
       });
     }
 
-    // Handle invite token if provided
-    let inviteData = null;
-    if (invite_token) {
-      const inviteResult = await pool.query(
-        `
-        SELECT gi.*, u.name as admin_name
-        FROM guru_invites gi
-        LEFT JOIN users u ON u.id = gi.created_by
-        WHERE gi.invite_token = $1
-        `,
-        [invite_token]
-      );
+    const isPromoterRequest = role_requested === "promoter" || role === "promoter";
 
-      if (inviteResult.rowCount === 0) {
-        return res.status(400).json({
-          error: true,
-          message: "Invalid invitation token.",
-          data: null,
-        });
-      }
-
-      inviteData = inviteResult.rows[0];
-
-      // Check if invite is already used
-      if (inviteData.used_at) {
-        return res.status(400).json({
-          error: true,
-          message: "This invitation has already been used.",
-          data: null,
-        });
-      }
-
-      // Check if invite is expired
-      if (new Date(inviteData.expires_at) < new Date()) {
-        return res.status(400).json({
-          error: true,
-          message: "This invitation has expired.",
-          data: null,
-        });
-      }
-
-      // Check if email matches
-      if (inviteData.email !== email) {
-        return res.status(400).json({
-          error: true,
-          message: `This invitation is for ${inviteData.email}. Please use that email address.`,
-          data: null,
-        });
-      }
-
-      // Guru invitations are accepted through POST /auth/guru/register (account is active immediately)
-      if (inviteData.role === "guru") {
-        return res.status(400).json({
-          error: true,
-          message: "This is a Guru invitation. Please use the Guru registration link from your invitation email.",
-          data: null,
-        });
-      }
-
-      console.log(`[REGISTER] Valid invite found for role: ${inviteData.role}`);
+    if (role_requested === "guru" || role === "guru") {
+      return res.status(400).json({
+        error: true,
+        message: "The Guru role is no longer available. You can only choose: buyer or promoter.",
+        data: null,
+      });
     }
 
-    // Handle role_requested for Guru and Promoter flows
-    const isGuruRequest = role_requested === "guru" || role === "guru";
-    const isPromoterRequest = role_requested === "promoter" || role === "promoter";
+    if (role_requested === "network_manager" || role === "network_manager") {
+      return res.status(400).json({
+        error: true,
+        message: "The Network Manager role is no longer available. You can only choose: buyer or promoter.",
+        data: null,
+      });
+    }
 
     if (promoterReferralToken && !isPromoterRequest) {
       return res.status(400).json({
@@ -768,33 +662,11 @@ async function register(req, res) {
       });
     }
 
-    if (role_requested === "network_manager" || role === "network_manager") {
-      return res.status(400).json({
-        error: true,
-        message: "The Network Manager role is no longer available. You can only choose: buyer, promoter, or guru.",
-        data: null,
-      });
-    }
-
     // Validate role if provided
-    const allowedSelfAssignRoles = ["buyer", "promoter", "guru"];
-    const adminOnlyRoles = ["admin", "staff_finance", "staff_rewards", "staff_charity", "founder"];
+    const allowedSelfAssignRoles = ["buyer", "promoter"];
+    const adminOnlyRoles = ["admin", "staff_finance", "staff_rewards", "staff_charity", "founder", "kings_account"];
 
     if (role) {
-      // Check if role is valid
-      const roleCheck = await pool.query(
-        "SELECT key FROM roles WHERE key = $1",
-        [role]
-      );
-
-      if (roleCheck.rowCount === 0) {
-        return res.status(400).json({
-          error: true,
-          message: `Invalid role: ${role}. Valid roles are: buyer, promoter, guru, admin, staff_finance, staff_rewards, staff_charity, founder.`,
-          data: null,
-        });
-      }
-
       // Prevent self-assignment of admin-only roles
       if (adminOnlyRoles.includes(role)) {
         return res.status(403).json({
@@ -808,7 +680,7 @@ async function register(req, res) {
       if (!allowedSelfAssignRoles.includes(role)) {
         return res.status(400).json({
           error: true,
-          message: `Role '${role}' cannot be selected during registration. You can only choose: buyer, promoter, or guru.`,
+          message: `Role '${role}' cannot be selected during registration. You can only choose: buyer or promoter.`,
           data: null,
         });
       }
@@ -831,35 +703,14 @@ async function register(req, res) {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Determine initial active role
-    let initialRole;
-    let accountStatus;
-    let emailStatus;
+    // Buyers are active straight away. A self-registered Promoter stays 'pending' until the
+    // application is submitted and the King approves it.
+    const initialRole = isPromoterRequest ? "promoter" : "buyer";
+    const accountStatus = isPromoterRequest ? "pending" : "active";
+    const emailStatus = "pending";
 
-    // If user has an invite, use the role from the invite
-    if (inviteData) {
-      initialRole = inviteData.role;
-      accountStatus = "active";
-      emailStatus = "pending";
-      console.log(`[REGISTER] Using invite role: ${initialRole}`);
-    } else {
-      // No invite - use self-selection logic
-      initialRole = isGuruRequest ? "buyer" : (role && allowedSelfAssignRoles.includes(role) ? role : "buyer");
-
-      if (isGuruRequest) {
-        accountStatus = "requested";
-        emailStatus = "pending";
-      } else if (role === "promoter") {
-        accountStatus = "pending";
-        emailStatus = "pending";
-      } else {
-        accountStatus = "active";
-        emailStatus = "pending";
-      }
-    }
-
-    // Create user (name/city for buyer; others complete profile later)
-    const isBuyerRequest = role_requested === "buyer" || role === "buyer";
+    // Create user (name/city for buyer; promoters complete their profile in the application)
+    const isBuyerRequest = initialRole === "buyer";
     const userName = isBuyerRequest && name && typeof name === "string" && name.trim() ? name.trim() : null;
     const userCity = city && typeof city === "string" && city.trim() ? city.trim() : null;
     const userResult = await pool.query(
@@ -873,87 +724,37 @@ async function register(req, res) {
 
     const user = userResult.rows[0];
 
-    // Promoter referral_token: Flow 1 (promoter_referrals) or Flow 2 (guru_referrals public code).
+    // Promoter -> Promoter referral token (promoter_referrals)
     if (promoterReferralToken) {
       const flow1Check = await pool.query(
         `SELECT 1 FROM promoter_referrals WHERE referral_link_token = $1 LIMIT 1`,
         [promoterReferralToken]
       );
-      if (flow1Check.rowCount > 0) {
+      if (flow1Check.rowCount === 0) {
         try {
-          await claimReferralOnRegister({
-            token: promoterReferralToken,
-            referredUserId: user.id,
-          });
-        } catch (claimErr) {
-          try {
-            await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
-          } catch (_) {}
-          const status = claimErr.status || 400;
-          return res.status(status).json({
-            error: true,
-            message: claimErr.message || "Unable to apply referral token.",
-            data: null,
-          });
-        }
-      } else {
-        const guruRef = await ReferralService.validateReferralCode(promoterReferralToken);
-        if (guruRef) {
-          try {
-            await ReferralService.recordSignup(promoterReferralToken, user.id);
-          } catch (signupErr) {
-            try {
-              await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
-            } catch (_) {}
-            return res.status(400).json({
-              error: true,
-              message: signupErr.message || "Unable to apply referral token.",
-              data: null,
-            });
-          }
-          // Guru public link: attach to network so dashboards / credit routing see this promoter
-          // (recordSignup only writes user_attributions + referral_events).
-          if (user.role === "promoter") {
-            const gid = guruRef.guru_id;
-            try {
-              await pool.query(
-                `INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source, created_at, changed_at)
-                 VALUES ($1, $2, 'guru_public_referral', NOW(), NOW())
-                 ON CONFLICT (promoter_user_id) DO UPDATE
-                 SET guru_user_id = EXCLUDED.guru_user_id,
-                     source = EXCLUDED.source,
-                     changed_at = NOW()`,
-                [user.id, gid]
-              );
-              await pool.query(
-                `INSERT INTO promoter_profiles (user_id, guru_id, created_at, updated_at)
-                 VALUES ($1, $2, NOW(), NOW())
-                 ON CONFLICT (user_id) DO UPDATE
-                 SET guru_id = EXCLUDED.guru_id, updated_at = NOW()`,
-                [user.id, gid]
-              );
-            } catch (linkErr) {
-              console.error("[register] guru referral attach promoter_guru_links:", linkErr.message);
-              try {
-                await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
-              } catch (_) {}
-              return res.status(500).json({
-                error: true,
-                message: "Unable to complete referral signup. Please try again.",
-                data: null,
-              });
-            }
-          }
-        } else {
-          try {
-            await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
-          } catch (_) {}
-          return res.status(400).json({
-            error: true,
-            message: "Invalid referral token.",
-            data: null,
-          });
-        }
+          await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
+        } catch (_) {}
+        return res.status(400).json({
+          error: true,
+          message: "Invalid referral token.",
+          data: null,
+        });
+      }
+      try {
+        await claimReferralOnRegister({
+          token: promoterReferralToken,
+          referredUserId: user.id,
+        });
+      } catch (claimErr) {
+        try {
+          await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
+        } catch (_) {}
+        const status = claimErr.status || 400;
+        return res.status(status).json({
+          error: true,
+          message: claimErr.message || "Unable to apply referral token.",
+          data: null,
+        });
       }
     }
 
@@ -979,99 +780,7 @@ async function register(req, res) {
       } catch (_) {}
     }
 
-    // Pre-provision guru public referral code during registration so frontend can read via GET endpoint.
-    if (isGuruRequest) {
-      try {
-        await ReferralService.createReferralCode(user.id);
-      } catch (guruReferralErr) {
-        console.error("[register] ensureGuruReferralCode:", guruReferralErr.message);
-      }
-    }
-
-    // If user registered via invite, mark invite as used
-    if (inviteData) {
-      try {
-        await pool.query(`UPDATE guru_invites SET used_at = NOW() WHERE id = $1`, [inviteData.id]);
-      } catch (err) {
-        // Continue with registration even if invite update fails
-        console.error('Error processing invite:', err);
-      }
-    }
-
-    // Handle referral tracking if guruCode is provided
-    if (guruCode) {
-      try {
-        await ReferralService.recordSignup(guruCode, user.id);
-      } catch (err) {
-        console.error('Referral tracking error:', err.message);
-        // Don't fail registration if referral tracking fails
-      }
-    }
-
-    // For invited users, create OTP for email verification (don't skip OTP)
-    if (inviteData) {
-      const otpResult = await createOtp({
-        email,
-        purpose: "signup",
-        ip: req.ip,
-        userAgent: req.headers["user-agent"],
-      });
-
-      return res.status(201).json({
-        error: false,
-        message: `Registration successful! Please verify your email with the OTP sent to your inbox.`,
-        data: {
-          email,
-          userId: user.user_no ?? user.id,
-          otp: otpResult.otp, // In production, remove this - send via email only
-          challengeId: otpResult.challengeId,
-          "expires-in": otpResult.expiresIn,
-          accountStatus: user.account_status,
-          emailStatus: user.email_status,
-          role: user.role,
-          invited: true,
-        },
-      });
-    }
-
-    // For Guru and Promoter (non-invited), create OTP for email verification
-    if (isGuruRequest || isPromoterRequest) {
-      const otpResult = await createOtp({
-        email,
-        purpose: "signup",
-        ip: req.ip,
-        userAgent: req.headers["user-agent"],
-      });
-
-      const roleRequested = isPromoterRequest ? "promoter" : "guru";
-
-      return res.status(201).json({
-        error: false,
-        message: "Registration successful. Please verify your email with the OTP sent to your inbox.",
-        data: {
-          email,
-          userId: user.user_no ?? user.id,
-          otp: otpResult.otp, // In production, remove this - send via email only
-          challengeId: otpResult.challengeId,
-          "expires-in": otpResult.expiresIn,
-          accountStatus: accountStatus,
-          emailStatus: emailStatus,
-          roleRequested: roleRequested,
-        },
-      });
-    }
-
-    // Handle guru referral link if provided
-    // Note: We only track referrals here. Promoter-Guru attachment is admin-controlled.
-    if (guruCode) {
-      console.log(`[REGISTER] Processing guruCode: ${guruCode} for user: ${email}`);
-      // Attribution is now tracked via ReferralService.recordSignup above
-      // Admin must manually attach promoters to Gurus
-    } else {
-      console.log(`[REGISTER] No guruCode provided for user: ${email}`);
-    }
-
-    // Create OTP for email verification (for all registrations including buyers)
+    // Create OTP for email verification (buyers and promoters)
     const otpResult = await createOtp({
       email,
       purpose: "signup",
@@ -1079,25 +788,16 @@ async function register(req, res) {
       userAgent: req.headers["user-agent"],
     });
 
-    // Build success message based on role
-    let roleMessage = "";
-    if (role === "promoter") {
-      roleMessage = " You have been registered as a Promoter. You can now create events and sell tickets.";
-    } else if (role === "guru") {
-      roleMessage = " You have been registered as a Guru. You can now refer promoters and earn commissions.";
-    }
-
-    // For promoter registration, return simplified response format
-    if (role === "promoter") {
+    if (isPromoterRequest) {
       return res.status(201).json({
         error: false,
         message: "Registration successful. Please verify your email with the OTP sent to your inbox.",
         data: {
           email,
           userId: user.user_no ?? user.id,
-          accountStatus: accountStatus,
-          emailStatus: emailStatus,
-          roleRequested: role,
+          accountStatus,
+          emailStatus,
+          roleRequested: "promoter",
           otp: otpResult.otp, // In production, send via email only
           challengeId: otpResult.challengeId,
           "expires-in": otpResult.expiresIn,
@@ -1107,7 +807,7 @@ async function register(req, res) {
 
     return res.status(201).json({
       error: false,
-      message: `Registration successful. Please verify your email with the OTP sent to your inbox.${roleMessage}`,
+      message: "Registration successful. Please verify your email with the OTP sent to your inbox.",
       data: {
         email,
         userId: user.user_no ?? user.id,
@@ -1195,14 +895,21 @@ async function login(req, res) {
       });
     }
 
-    // A Guru invited by the King but not yet fully registered (no password_hash)
+    // The Guru role has been removed. Existing Guru rows are kept in the database but can
+    // no longer log in.
+    if (user.role === "guru") {
+      return res.status(403).json({
+        error: true,
+        message: "The Guru role is no longer available. Please contact support.",
+        data: { email },
+      });
+    }
+
+    // A Promoter invited by the King but not yet fully registered (no password_hash)
     // needs a specific, actionable error — not the generic "pending approval"
-    // message below, which would otherwise fire first regardless of how far
-    // through the invite checkpoints they've gotten (see guruInviteStatus.service.js).
+    // message below (see accountOnboardingStatus.service.js).
     if (!user.password_hash) {
-      const inviteBlock =
-        (await getPendingGuruInviteLoginBlock(user)) ||
-        (await getPendingPromoterInviteLoginBlock(user));
+      const inviteBlock = await getPendingPromoterInviteLoginBlock(user);
       if (inviteBlock) {
         return res.status(403).json({
           error: true,
@@ -1213,17 +920,15 @@ async function login(req, res) {
       }
     }
 
-    // A self-registered Guru ('requested') or Promoter ('pending') who hasn't finished
+    // A self-registered Promoter ('pending') who hasn't finished
     // onboarding (email not verified, or application not submitted) gets a specific
     // error. The password is checked first so these details are only revealed to the
     // real account owner; on a wrong password we fall through to the existing
     // behaviour unchanged.
-    if ((accountStatus === "requested" || accountStatus === "pending") && user.password_hash) {
+    if (accountStatus === "pending" && user.password_hash) {
       const passwordOk = await bcrypt.compare(password, user.password_hash);
       if (passwordOk) {
-        const onboardingBlock =
-          (await getIncompleteSelfRegisteredGuruLoginBlock(user)) ||
-          (await getIncompleteSelfRegisteredPromoterLoginBlock(user));
+        const onboardingBlock = await getIncompleteSelfRegisteredPromoterLoginBlock(user);
         if (onboardingBlock) {
           // Email is already verified and the password just checked out, so let the
           // client go straight to the application form: issue a normal session (same
@@ -1361,7 +1066,7 @@ async function login(req, res) {
 /* =======================
    OAUTH REGISTER (Google/Facebook)
    POST /auth/oauth/register
-   Supports applicationData for approval-required roles (guru, promoter)
+   Supports applicationData for the approval-required promoter role
 ======================= */
 async function oauthRegister(req, res) {
   const client = await pool.connect();
@@ -1407,9 +1112,17 @@ async function oauthRegister(req, res) {
       });
     }
 
-    const isGuruRequest = effectiveRole === "guru";
+    if (effectiveRole === "guru") {
+      client.release();
+      return res.status(400).json({
+        error: true,
+        message: "The Guru role is no longer available. You can only choose: buyer or promoter.",
+        data: null,
+      });
+    }
+
     const isPromoterRequest = effectiveRole === "promoter";
-    const isApprovalRequired = isGuruRequest || isPromoterRequest;
+    const isApprovalRequired = isPromoterRequest;
 
     // Check if user exists
     const existingUserResult = await pool.query(
@@ -1462,8 +1175,7 @@ async function oauthRegister(req, res) {
 
       await client.query("BEGIN");
 
-      const initialRole = isGuruRequest ? null
-        : (isPromoterRequest ? "promoter" : "buyer");
+      const initialRole = isPromoterRequest ? "promoter" : "buyer";
       const accountStatus = isApprovalRequired ? "pending" : "active";
 
       const buyerCity = effectiveRole === "buyer" ? (applicationData.city || null) : null;
@@ -1483,57 +1195,33 @@ async function oauthRegister(req, res) {
       user = createResult.rows[0];
 
       // Create application records for approval-required roles
-      if (isGuruRequest) {
-        const { agreed_to_terms, agreed_to_guru_agreement } = applicationData;
-        if (!agreed_to_terms || !agreed_to_guru_agreement) {
+      if (isPromoterRequest) {
+        const { agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms } = applicationData;
+        const oauthPhone = typeof applicationData.phone === "string" ? applicationData.phone.trim().replace(/\s+/g, "") : "";
+        if (!/^\+[1-9]\d{1,14}$/.test(oauthPhone)) {
           await client.query("ROLLBACK");
           client.release();
-          return res.status(400).json({
+          return res.status(422).json({
             error: true,
-            message: "Agreement to terms is required for Guru application.",
+            message: "A phone number in E.164 format (e.g., +447911123456) is required for Promoter application.",
             data: null,
           });
         }
-        await client.query(
-          `INSERT INTO guru_applications
-            (user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status)
-          VALUES ($1, $2, $3, $4, $5, 'pending')`,
-          [user.id, applicationData.territory_name || null, avatarUrl || null, agreed_to_terms, agreed_to_guru_agreement]
-        );
-      } else if (isPromoterRequest) {
-        const { guru_user_id, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms } = applicationData;
-        if (!guru_user_id || !agreed_to_terms || !agreed_to_promoter_agreement || !agreed_to_activation_fee_terms) {
+        await client.query("UPDATE users SET phone = $1 WHERE id = $2", [oauthPhone, user.id]);
+        if (!agreed_to_terms || !agreed_to_promoter_agreement || !agreed_to_activation_fee_terms) {
           await client.query("ROLLBACK");
           client.release();
           return res.status(400).json({
             error: true,
-            message: "Guru selection and agreement to all terms are required for Promoter application.",
-            data: null,
-          });
-        }
-        const guruResult = await client.query(
-          `SELECT id, role, account_status FROM users WHERE id = $1 AND role = 'guru'`,
-          [guru_user_id]
-        );
-        if (guruResult.rowCount === 0 || guruResult.rows[0].account_status !== "active") {
-          await client.query("ROLLBACK");
-          client.release();
-          return res.status(400).json({
-            error: true,
-            message: "Invalid or inactive Guru selection.",
+            message: "Agreement to all terms is required for Promoter application.",
             data: null,
           });
         }
         await client.query(
           `INSERT INTO promoter_applications
-            (user_id, guru_user_id, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
+            (user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
           VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-          [user.id, guru_user_id, avatarUrl || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
-        );
-        await client.query(
-          `INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source) VALUES ($1, $2, 'application')
-           ON CONFLICT (promoter_user_id) DO NOTHING`,
-          [user.id, guru_user_id]
+          [user.id, applicationData.territory_name || null, avatarUrl || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
         );
       }
 
@@ -1544,24 +1232,27 @@ async function oauthRegister(req, res) {
       await client.query("COMMIT");
     }
 
-    // Users with NULL role (Guru applicants) cannot login
+    // Users with NULL role (legacy pending applicants) cannot login
     if (user.role === null || user.role === undefined) {
-      // Resolve actual pending role from the application table (not effectiveRole, which defaults to "buyer")
-      const guruApp = await pool.query(
-        "SELECT id FROM guru_applications WHERE user_id = $1 LIMIT 1",
-        [user.id]
-      );
-      const pendingRole = guruApp.rowCount > 0 ? "guru" : effectiveRole;
       client.release();
       return res.json({
         error: false,
         message: "Application submitted successfully. You will be notified once approved.",
         data: {
           pendingApproval: true,
-          role: pendingRole,
+          role: effectiveRole,
           email,
           message: "Your application has been submitted. You cannot login until your application has been approved.",
         },
+      });
+    }
+
+    if (user.role === "guru") {
+      client.release();
+      return res.status(403).json({
+        error: true,
+        message: "The Guru role is no longer available. Please contact support.",
+        data: { email },
       });
     }
 
@@ -1574,8 +1265,8 @@ async function oauthRegister(req, res) {
       });
     }
 
-    // Block promoters and gurus from logging in until approved (account_status = 'active')
-    if ((user.role === "promoter" || user.role === "guru") && user.account_status !== "active") {
+    // Block promoters from logging in until approved by the King (account_status = 'active')
+    if (user.role === "promoter" && user.account_status !== "active") {
       client.release();
       return res.json({
         error: false,
@@ -1812,8 +1503,8 @@ async function verifyEmail(req, res) {
       });
     }
 
-    // Block promoters and gurus from logging in until approved (account_status = 'active')
-    if ((user.role === 'promoter' || user.role === 'guru') && user.account_status !== 'active') {
+    // Block promoters from logging in until approved by the King (account_status = 'active')
+    if (user.role === 'promoter' && user.account_status !== 'active') {
       return res.status(403).json({
         error: true,
         message: "Your account is pending approval. You cannot login until your application has been approved.",
@@ -2153,18 +1844,6 @@ async function setActiveRole(req, res) {
   }
 }
 
-/**
- * Guru Checkout (DEPRECATED)
- * POST /auth/guru/checkout
- *
- * This endpoint is deprecated. Use the new Guru registration flow:
- * 1. POST /api/gurus/activation-fee/commit with { choice: 'upfront' | 'negative_balance' }
- * 2. Wait for King's Account or Admin approval
- */
-async function guruCheckout(req, res) {
-  return fail(res, req, 410, "DEPRECATED", "This endpoint is deprecated. Use POST /api/gurus/activation-fee/commit with { choice: 'upfront' | 'negative_balance' }, then await approval from the King's Account or an Admin.");
-}
-
 
 async function kingsRegister(req, res) {
   try {
@@ -2495,13 +2174,14 @@ async function changePasswordV1(req, res) {
 }
 
 /**
- * POST /api/v1/gurus/promoter/referral-invites
- * Create Promoter Referral Invite (Guru or Kings Account)
+ * POST /api/auth/promoters/invites
+ * Create Promoter Invite (King's Account, founder or admin)
  * 
- * AUTHORIZATION: Only gurus or kings_account can create promoter referral invites
+ * AUTHORIZATION: Only kings_account, founder or admin can invite promoters
  * 
  * Requirements:
- * - Guru/Kings Account creates a time-limited (15 min) referral link for Promoter
+ * - The King creates a time-limited (15 min) invite link for a Promoter
+ * - Invited promoters are approved automatically once they accept (no separate approval step)
  * - Email is sent with referral link
  * - Referral token must be validated before registration
  * - Token expires after 15 minutes
@@ -2512,18 +2192,18 @@ async function changePasswordV1(req, res) {
 async function createPromoterReferralInvite(req, res) {
   const client = await pool.connect();
   try {
-    // AUTHORIZATION: Only gurus or kings_account can create referral invites
-    const allowedRoles = ['guru', 'kings_account'];
+    // AUTHORIZATION: Only kings_account, founder or admin can invite promoters
+    const allowedRoles = ['kings_account', 'founder', 'admin'];
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
         error: true,
-        message: "Only Gurus and Kings Accounts can create promoter referral invites.",
+        message: "Only the King's Account can invite promoters.",
         data: null,
       });
     }
 
     const { email, name = '', expires_in_minutes = 15 } = req.body;
-    const guruId = req.user.id;
+    const inviterId = req.user.id;
 
     // VALIDATION: Email is required
     if (!email || !isValidEmail(email)) {
@@ -2559,7 +2239,7 @@ async function createPromoterReferralInvite(req, res) {
 
     await client.query("BEGIN");
 
-    // Create a pending promoter user immediately so Guru can manage/activate from dashboard
+    // Create a pending promoter user immediately so the King can see and manage them from the portal
     const pendingUserResult = await client.query(
       `INSERT INTO users (email, name, role, status, account_status, email_status)
        VALUES ($1, $2, 'promoter', 'active', 'pending', 'pending')
@@ -2569,21 +2249,10 @@ async function createPromoterReferralInvite(req, res) {
     const pendingPromoterUserId = pendingUserResult.rows[0].id;
 
     await client.query(
-      `INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source, created_at, changed_at)
-       VALUES ($1, $2, 'invite_referral', NOW(), NOW())
-       ON CONFLICT (promoter_user_id) DO UPDATE
-       SET guru_user_id = EXCLUDED.guru_user_id,
-           source = EXCLUDED.source,
-           changed_at = NOW()`,
-      [pendingPromoterUserId, guruId]
-    );
-
-    await client.query(
-      `INSERT INTO promoter_profiles (user_id, guru_id, created_at, updated_at)
-       VALUES ($1, $2, NOW(), NOW())
-       ON CONFLICT (user_id) DO UPDATE
-       SET guru_id = EXCLUDED.guru_id, updated_at = NOW()`,
-      [pendingPromoterUserId, guruId]
+      `INSERT INTO promoter_profiles (user_id, created_at, updated_at)
+       VALUES ($1, NOW(), NOW())
+       ON CONFLICT (user_id) DO NOTHING`,
+      [pendingPromoterUserId]
     );
 
     // Generate referral token (UUID-like token)
@@ -2592,17 +2261,14 @@ async function createPromoterReferralInvite(req, res) {
 
     // Create referral invite record
     const inviteResult = await client.query(
-      `INSERT INTO promoter_referral_invites (email, name, referral_token, guru_user_id, kings_account_user_id, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO promoter_referral_invites (email, name, referral_token, kings_account_user_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id, referral_token, expires_at, email`,
-      [email, name, referralToken, guruId, req.user.role === 'kings_account' ? guruId : null, expiresAt]
+      [email, name, referralToken, inviterId, expiresAt]
     );
 
     const invite = inviteResult.rows[0];
 
-    // Get guru name
-    const guruResult = await client.query("SELECT name FROM users WHERE id = $1", [guruId]);
-    const guruName = guruResult.rows[0]?.name || 'Your Guru';
 
     // Build registration URL
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -2612,7 +2278,6 @@ async function createPromoterReferralInvite(req, res) {
     try {
       await sendPromoterReferralInviteEmail({
         email,
-        guruName,
         registrationUrl,
         expiresInMinutes: expires_in_minutes,
       });
@@ -2697,9 +2362,8 @@ async function resendPromoterReferralInvite(req, res) {
     if (email) {
       // PREFERRED: Search by email (promoter knows their own email)
       inviteResult = await pool.query(
-        `SELECT pri.*, u.name as guru_name
+        `SELECT pri.*
          FROM promoter_referral_invites pri
-         LEFT JOIN users u ON u.id = pri.guru_user_id
          WHERE pri.email = $1 AND pri.used_at IS NULL
          ORDER BY pri.created_at DESC
          LIMIT 1`,
@@ -2708,9 +2372,8 @@ async function resendPromoterReferralInvite(req, res) {
     } else {
       // FALLBACK: Search by old token
       inviteResult = await pool.query(
-        `SELECT pri.*, u.name as guru_name
+        `SELECT pri.*
          FROM promoter_referral_invites pri
-         LEFT JOIN users u ON u.id = pri.guru_user_id
          WHERE pri.referral_token = $1`,
         [referral_token]
       );
@@ -2719,7 +2382,7 @@ async function resendPromoterReferralInvite(req, res) {
     if (inviteResult.rowCount === 0) {
       return res.status(404).json({
         error: true,
-        message: "No referral invitation found. Please check your email. If you don't have an invitation, ask your Guru to send one.",
+        message: "No referral invitation found. Please check your email. If you don't have an invitation, ask the King's Account to send one.",
         data: { email: email || null },
       });
     }
@@ -2758,14 +2421,10 @@ async function resendPromoterReferralInvite(req, res) {
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const registrationUrl = `${baseUrl}/auth/promoter/register?referral_token=${newReferralToken}`;
 
-    // Get guru name
-    const guruName = originalInvite.guru_name || 'Your Guru';
-
     // SEND EMAIL with new referral link
     try {
       await sendPromoterReferralInviteResendEmail({
         email: updatedInvite.email,
-        guruName,
         registrationUrl,
         expiresInMinutes: expires_in_minutes,
       });
@@ -2777,7 +2436,7 @@ async function resendPromoterReferralInvite(req, res) {
     // Return success response
     return res.status(200).json({
       error: false,
-      message: `New referral invi tation sent to ${updatedInvite.email}! Check your inbox. This link expires in ${expires_in_minutes} minutes.`,
+      message: `New invitation sent to ${updatedInvite.email}! Check your inbox. This link expires in ${expires_in_minutes} minutes.`,
       data: {
         email: updatedInvite.email,
         resent_at: new Date(),
@@ -2799,23 +2458,23 @@ async function resendPromoterReferralInvite(req, res) {
 }
 
 /**
- * POST /api/v1/auth/promoter/register
- * Promoter Registration via Guru Referral Link (Module 5)
- * 
+ * POST /api/auth/promoter/register
+ * Promoter Registration via King Invite Link
+ *
  * Requirements:
- * - POST registration must include referral_token in request body
- * - On register: create a referral record, log referral_start_date, set referral_expiry = start date + 90 days
- * - Lock Guru assignment permanently — cannot be changed after registration
- * - Validate no duplicate email
- * 
- * Request: { name, email, password, phone, referral_token? }
- * Response: { access_token, user: { ...user_data, unlock_threshold: 575 } }
- * 
+ * - POST registration must include the invite referral_token in the request body
+ * - The email always comes from the invite, never from the request
+ * - Invited promoters are active immediately (the King's invite is the approval)
+ * - Invite is invalidated after use
+ *
+ * Request: { name, password, phone, referral_token }
+ * Response: { access_token, user: { ...user_data } }
+ *
  * Error Responses:
  * - 400: Missing required fields
- * - 401: Referral token invalid
- * - 410: Referral token expired
- * - 409: Email already registered
+ * - 401: Invite token invalid
+ * - 410: Invite token expired
+ * - 409: Invite already used
  */
 
 async function promoterRegisterViaReferral(req, res) {
@@ -2825,6 +2484,7 @@ async function promoterRegisterViaReferral(req, res) {
 
     // VALIDATION
     const errors = [];
+    if (!referral_token) errors.push("Invite token is required.");
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       errors.push("Name is required.");
     }
@@ -2862,88 +2522,68 @@ async function promoterRegisterViaReferral(req, res) {
       });
     }
 
-    // STEP 1: VALIDATE TOKEN
-    let guruId = null;
-    let guruData = null;
-    let isTimeBasedInvite = false;
-    let email = null; // <-- THIS is now controlled by backend
+    // STEP 1: VALIDATE INVITE TOKEN
+    const result = await client.query(
+      `SELECT * FROM promoter_referral_invites WHERE referral_token = $1`,
+      [referral_token]
+    );
 
-    if (referral_token) {
-      const result = await client.query(
-        `SELECT pri.*, u.id as user_id, u.name as guru_name
-         FROM promoter_referral_invites pri
-         JOIN users u ON u.id = pri.guru_user_id
-         WHERE pri.referral_token = $1`,
-        [referral_token]
-      );
-
-      if (result.rowCount === 0) {
-        client.release();
-        return res.status(401).json({
-          error: true,
-          message: "Referral token is invalid.",
-        });
-      }
-
-      const invite = result.rows[0];
-
-      // USED
-      if (invite.used_at) {
-        client.release();
-        return res.status(409).json({
-          error: true,
-          message: "This referral invitation has already been used.",
-        });
-      }
-
-      // EXPIRED
-      if (new Date(invite.expires_at) < new Date()) {
-        client.release();
-        return res.status(410).json({
-          error: true,
-          message: "This referral invitation has expired.",
-        });
-      }
-
-      // ✅ ALWAYS TAKE EMAIL FROM INVITE
-      email = invite.email;
-
-      guruId = invite.user_id;
-      guruData = invite;
-      isTimeBasedInvite = true;
+    if (result.rowCount === 0) {
+      client.release();
+      return res.status(401).json({
+        error: true,
+        message: "Invite token is invalid.",
+      });
     }
 
-    // STEP 2: CHECK EXISTING USER (invite flow can pre-create pending promoter user)
-    let invitedPendingUserId = null;
-    if (isTimeBasedInvite) {
-      const pendingUserResult = await client.query(
-        `SELECT id, account_status
-         FROM users
-         WHERE email = $1
-         ORDER BY created_at ASC
-         LIMIT 1`,
-        [email]
-      );
+    const invite = result.rows[0];
 
-      if (pendingUserResult.rowCount > 0) {
-        invitedPendingUserId = pendingUserResult.rows[0].id;
-      }
-    } else {
-      const existingUser = await client.query(
-        "SELECT id FROM users WHERE email = $1",
-        [email]
-      );
-
-      if (existingUser.rowCount > 0) {
-        client.release();
-        return res.status(409).json({
-          error: true,
-          message: "Email is already registered.",
-        });
-      }
+    if (invite.used_at) {
+      client.release();
+      return res.status(409).json({
+        error: true,
+        message: "This invitation has already been used.",
+      });
     }
 
-    // STEP 3: CREATE USER
+    if (new Date(invite.expires_at) < new Date()) {
+      client.release();
+      return res.status(410).json({
+        error: true,
+        message: "This invitation has expired.",
+      });
+    }
+
+    // ALWAYS TAKE EMAIL FROM INVITE
+    const email = invite.email;
+
+    // STEP 2: FIND THE PENDING USER PRE-CREATED BY THE INVITE
+    const pendingUserResult = await client.query(
+      `SELECT id, password_hash, account_status
+       FROM users
+       WHERE email = $1
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [email]
+    );
+    const invitedPendingUserId = pendingUserResult.rows[0]?.id ?? null;
+
+    if (pendingUserResult.rows[0]?.password_hash) {
+      client.release();
+      return res.status(409).json({
+        error: true,
+        message: "This email address is already registered. Please log in instead.",
+      });
+    }
+    if (pendingUserResult.rows[0]?.account_status === "blocked") {
+      client.release();
+      return res.status(403).json({
+        error: true,
+        message: "This account has been blocked. Please contact support.",
+      });
+    }
+
+    // STEP 3: CREATE / ACTIVATE USER
     await client.query("BEGIN");
 
     const passwordHash = await bcrypt.hash(password, 12);
@@ -2976,40 +2616,22 @@ async function promoterRegisterViaReferral(req, res) {
       user = userResult.rows[0];
     }
 
-    // STEP 4: LINK GURU
-    if (guruId) {
-      await client.query(
-        `INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source, created_at, changed_at)
-         VALUES ($1, $2, 'referral_link', NOW(), NOW())
-         ON CONFLICT (promoter_user_id) DO UPDATE 
-         SET guru_user_id = EXCLUDED.guru_user_id`,
-        [user.id, guruId]
-      );
-
-    }
-
-    // Always ensure promoter profile exists for promoter-role users.
-    // Some flows may register a promoter without an attached guru yet.
     await client.query(
-      `INSERT INTO promoter_profiles (user_id, guru_id, created_at, updated_at)
-       VALUES ($1, $2, NOW(), NOW())
-       ON CONFLICT (user_id) DO UPDATE
-       SET guru_id = COALESCE(EXCLUDED.guru_id, promoter_profiles.guru_id),
-           updated_at = NOW()`,
-      [user.id, guruId || null]
+      `INSERT INTO promoter_profiles (user_id, created_at, updated_at)
+       VALUES ($1, NOW(), NOW())
+       ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()`,
+      [user.id]
     );
 
     await ensurePromoterCreditWallet(client, user.id);
 
     // MARK INVITE USED
-    if (isTimeBasedInvite) {
-      await client.query(
-        `UPDATE promoter_referral_invites
-         SET used_at = NOW()
-         WHERE referral_token = $1`,
-        [referral_token]
-      );
-    }
+    await client.query(
+      `UPDATE promoter_referral_invites
+       SET used_at = NOW()
+       WHERE id = $1`,
+      [invite.id]
+    );
 
     await client.query("COMMIT");
     client.release();
@@ -3028,14 +2650,13 @@ async function promoterRegisterViaReferral(req, res) {
       message: "Promoter registration successful.",
       data: {
         access_token: session.accessToken,
+        expires_at: session.expiresAt,
         user: {
           id: user.id,
           name: user.name,
           email: user.email,
           phone: user.phone,
           role: "promoter",
-          guru_id: guruId || null,
-          guru_display_name: guruData?.guru_name || null,
         },
       },
     });
@@ -3054,18 +2675,15 @@ async function promoterRegisterViaReferral(req, res) {
 }
 
 /**
- * GET /api/v1/referrals/validate/:token
- * Validate Referral Token and Return Guru Info (Module 5)
- * 
- * Requirements:
- * - GET validate endpoint must return guru_id and guru display name from the referral token
- * - Confirm token is valid and not expired
- * 
- * Response: { valid: true, guru_id, guru_display_name }
- * 
+ * GET /api/auth/referrals/validate/:token
+ * Validate a promoter invite token.
+ *
+ * Response: { valid: true, email, name }
+ *
  * Error Responses:
- * - 401: Referral token invalid
- * - 410: Referral token expired
+ * - 401: Invite token invalid
+ * - 409: Invite already used
+ * - 410: Invite token expired
  */
 async function validateReferralToken(req, res) {
   try {
@@ -3074,762 +2692,62 @@ async function validateReferralToken(req, res) {
     if (!token) {
       return res.status(400).json({
         error: true,
-        message: "Referral token is required.",
+        message: "Invite token is required.",
         data: null,
       });
     }
 
-    // STEP 1: Try new time-limited promoter_referral_invites system
-    const newInviteResult = await pool.query(
-      `SELECT pri.*, u.id as guru_id, u.name as guru_display_name
-       FROM promoter_referral_invites pri
-       JOIN users u ON u.id = pri.guru_user_id
-       WHERE pri.referral_token = $1`,
+    const inviteResult = await pool.query(
+      `SELECT * FROM promoter_referral_invites WHERE referral_token = $1`,
       [token]
     );
 
-    if (newInviteResult.rowCount > 0) {
-      const invite = newInviteResult.rows[0];
-
-      // Check if token is expired
-      if (new Date(invite.expires_at) < new Date()) {
-        return res.status(410).json({
-          error: true,
-          message: "Referral token has expired.",
-          data: { 
-            valid: false,
-            token
-          },
-        });
-      }
-
-      // Token is valid
-      return res.json({
-        error: false,
-        message: "Referral token is valid.",
-        data: {
-          valid: true,
-          guru_id: invite.guru_id,
-          guru_display_name: invite.guru_display_name,
-          token_type: "promoter_invite"
-        },
-      });
-    }
-
-    // STEP 2: Fall back to old guru_referrals system for backwards compatibility
-    const guruResult = await pool.query(
-      `SELECT gr.*, u.id as guru_id, u.name as guru_display_name
-       FROM guru_referrals gr
-       JOIN users u ON u.id = gr.guru_id
-       WHERE gr.referral_code = $1 AND gr.revoked_at IS NULL`,
-      [token]
-    );
-
-    if (guruResult.rowCount > 0) {
-      const guruData = guruResult.rows[0];
-
-      // Return validation success
-      return res.json({
-        error: false,
-        message: "Referral token is valid.",
-        data: {
-          valid: true,
-          guru_id: guruData.guru_id,
-          guru_display_name: guruData.guru_display_name,
-          token_type: "guru_referral"
-        },
-      });
-    }
-
-    // Token not found in either system
-    return res.status(401).json({
-      error: true,
-      message: "Referral token is invalid.",
-      data: { 
-        valid: false,
-        token
-      },
-    });
-
-  } catch (err) {
-    console.error("Validate referral token error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "An error occurred while validating the referral token. Please try again later.",
-      data: null,
-    });
-  }
-}
-
-/**
- * POST /api/auth/gurus/invites
- * Create Guru Invite Token (Kings Account, founder or admin)
- * 
- * Requirements:
- * - Only Kings Accounts, founders and admins can create Guru invites
- * - Generate a signed invite token
- * - Store invite in guru_invites table with expiry
- * - Return invite token and registration URL
- * 
- * Request: { email, expires_in_minutes?: 15 }
- * Response: { invite_token, registration_url, email, expires_at }
- */
-async function createGuruInvite(req, res) {
-  const client = await pool.connect();
-  try {
-    // AUTHORIZATION: Only kings_account, founder or admin can create guru invites
-    const allowedRoles = ['kings_account', 'founder', 'admin'];
-    if (!allowedRoles.includes(req.user.role)) {
-      client.release();
-      return res.status(403).json({
+    if (inviteResult.rowCount === 0) {
+      return res.status(401).json({
         error: true,
-        message: "Only Kings Accounts, founders and admins can create guru invites.",
-        data: null,
+        message: "Invite token is invalid.",
+        data: { valid: false, token },
       });
     }
-
-    const { email, name, contract_name, expires_in_minutes = 15 } = req.body;
-    const createdBy = req.user.id;
-
-    // VALIDATION: Email is required
-    if (!email || !isValidEmail(email)) {
-      client.release();
-      return res.status(400).json({
-        error: true,
-        message: "Valid email is required.",
-        data: { email: email || null },
-      });
-    }
-
-    // VALIDATION: Expires in minutes must be positive (1-1440 = 1 minute to 24 hours)
-    if (expires_in_minutes && (expires_in_minutes < 1 || expires_in_minutes > 1440)) {
-      client.release();
-      return res.status(400).json({
-        error: true,
-        message: "Expires in minutes must be between 1 and 1440 (24 hours).",
-        data: { expires_in_minutes },
-      });
-    }
-
-    const trimmedName = typeof name === "string" && name.trim() ? name.trim() : null;
-    const trimmedContractName = typeof contract_name === "string" && contract_name.trim() ? contract_name.trim() : null;
-
-    await client.query('BEGIN');
-
-    // A Guru invite creates a real (password-less) account immediately, so the
-    // King can see, edit, or delete it in the admin panel like any other Guru
-    // right away — it just can't log in until the invitee accepts and sets a
-    // password. If this email already has a real account (one with a password,
-    // or already role='guru'), block it; if it's only a still-pending
-    // placeholder from an earlier invite to the same email, reuse that row
-    // instead of creating a duplicate.
-    const existingUserResult = await client.query(
-      "SELECT id, password_hash, role FROM users WHERE email = $1",
-      [email]
-    );
-
-    let userId;
-    if (existingUserResult.rowCount > 0) {
-      const existing = existingUserResult.rows[0];
-      if (existing.password_hash || existing.role === 'guru') {
-        await client.query('ROLLBACK');
-        client.release();
-        return res.status(409).json({
-          error: true,
-          message: "Email is already registered.",
-          data: { email },
-        });
-      }
-      userId = existing.id;
-      if (trimmedName) {
-        await client.query(`UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2`, [trimmedName, userId]);
-      }
-    } else {
-      const userInsert = await client.query(
-        `INSERT INTO users (email, password_hash, name, role, status, account_status, email_status)
-         VALUES ($1, NULL, $2, NULL, 'active', 'pending', 'pending')
-         RETURNING id`,
-        [email, trimmedName]
-      );
-      userId = userInsert.rows[0].id;
-    }
-
-    // Pending Guru application so the King sees applicationStatus: pending and can
-    // approve/reject like any other applicant. activation_fee_status is set to
-    // 'not_required' because invited Gurus skip the £250 activation-fee flow
-    // entirely — approveGuruApplication's fee gate treats this the same as a
-    // committed fee.
-    await client.query(
-      `INSERT INTO guru_applications (user_id, contract_name, account_status, activation_fee_status, created_at, updated_at)
-       VALUES ($1, $2, 'pending', 'not_required', NOW(), NOW())
-       ON CONFLICT (user_id) DO UPDATE
-         SET contract_name = COALESCE(EXCLUDED.contract_name, guru_applications.contract_name),
-             updated_at = NOW()`,
-      [userId, trimmedContractName]
-    );
-
-    // Generate invite token (UUID-like token)
-    const inviteToken = require('crypto').randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + expires_in_minutes * 60 * 1000); // Convert minutes to milliseconds
-
-    // Invite record — still the source of truth for the token/expiry the
-    // invitee uses to accept, and for resending.
-    const inviteResult = await client.query(
-      `INSERT INTO guru_invites (email, name, contract_name, role, invite_token, created_by, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, invite_token, expires_at, email`,
-      [email, trimmedName || '', trimmedContractName, 'guru', inviteToken, createdBy, expiresAt]
-    );
-
-    await client.query('COMMIT');
 
     const invite = inviteResult.rows[0];
 
-    // Build registration URL
-    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const registrationUrl = `${baseUrl}/auth/guru/register?token=${inviteToken}`;
-
-    // SEND EMAIL with invite link
-    try {
-      await sendGuruInviteEmail({
-        email,
-        registrationUrl,
-        expiresInMinutes: expires_in_minutes,
+    if (invite.used_at) {
+      return res.status(409).json({
+        error: true,
+        message: "This invitation has already been used.",
+        data: { valid: false, token },
       });
-    } catch (emailError) {
-      console.warn(`[GURU INVITE] Email sending failed for ${email}:`, emailError.message);
-      // Continue - don't fail the API if email fails
     }
 
-    // Return success response
-    return res.status(201).json({
+    if (new Date(invite.expires_at) < new Date()) {
+      return res.status(410).json({
+        error: true,
+        message: "Invite token has expired.",
+        data: { valid: false, token },
+      });
+    }
+
+    return res.json({
       error: false,
-      message: `Guru invitation has been sent to ${email}. The link expires in ${expires_in_minutes} minutes. Check your email to verify the invitation.`,
+      message: "Invite token is valid.",
       data: {
+        valid: true,
         email: invite.email,
-        sent_at: new Date(),
-        expires_at: invite.expires_at,
-        expires_in_minutes: expires_in_minutes,
-        guru_id: userId,
-        // For testing/admin purposes only:
-        invite_token: invite.invite_token,
-        registration_url: registrationUrl,
+        name: invite.name || null,
+        token_type: "promoter_invite",
       },
     });
-
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    console.error("Create guru invite error:", err);
+    console.error("Validate invite token error:", err);
     return res.status(500).json({
       error: true,
-      message: "An error occurred while creating the guru invite.",
-      data: null,
-    });
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * POST /api/v1/auth/guru/invites/resend
- * Resend Guru Invite (Token Expired) - PUBLIC ENDPOINT
- * 
- * ⭐ THIS IS A PUBLIC ENDPOINT (NO AUTHENTICATION REQUIRED)
- * 
- * When a guru's invitation token expires, the frontend shows a "Resend Invitation" button.
- * The guru (without login) provides their email to request a new invite.
- * 
- * Flow:
- * 1. Guru receives invite email with token + link
- * 2. Guru doesn't click link for 15+ minutes (token expires)
- * 3. Guru clicks "Resend Invitation" button on frontend (unauthenticated)
- * 4. Frontend makes POST to this endpoint with email
- * 5. Backend generates NEW token, updates invite record, sends NEW email
- * 6. Guru receives fresh invite email with new token + link
- * 
- * Request: { email } OR { invite_token }
- * - email: The email address guru was invited with (PREFERRED)
- * - invite_token: The old expired token (fallback if email lost)
- * 
- * Response: 
- * - 200: Invitation resent successfully
- * - 400: Missing email and invite_token
- * - 404: No invitation found for this email/token
- * - 409: Invitation already used (guru already registered)
- * - 500: Server error
- */
-async function resendGuruInvite(req, res) {
-  try {
-    const { invite_token, email } = req.body;
-
-    // VALIDATION: Either invite_token or email must be provided
-    if (!invite_token && !email) {
-      return res.status(400).json({
-        error: true,
-        message: "Either 'email' or 'invite_token' is required.",
-        data: null,
-      });
-    }
-
-    // Find the original invitation
-    let inviteResult;
-    if (email) {
-      // PREFERRED: Search by email (guru knows their own email)
-      inviteResult = await pool.query(
-        `SELECT gi.*
-         FROM guru_invites gi
-         WHERE gi.email = $1 AND gi.used_at IS NULL
-         ORDER BY gi.created_at DESC
-         LIMIT 1`,
-        [email]
-      );
-    } else {
-      // FALLBACK: Search by old token
-      inviteResult = await pool.query(
-        `SELECT gi.*
-         FROM guru_invites gi
-         WHERE gi.invite_token = $1`,
-        [invite_token]
-      );
-    }
-
-    if (inviteResult.rowCount === 0) {
-      return res.status(404).json({
-        error: true,
-        message: "No invitation found. Please check your email. If you don't have an invitation, contact support.",
-        data: { email: email || null },
-      });
-    }
-
-    const originalInvite = inviteResult.rows[0];
-
-    // Check if invitation was already used
-    if (originalInvite.used_at) {
-      return res.status(409).json({
-        error: true,
-        message: "This invitation was already accepted. Please log in to your account.",
-        data: { email: originalInvite.email },
-      });
-    }
-
-    // Get expiration time (default 15 minutes)
-    const expires_in_minutes = 15;
-    const newExpiresAt = new Date(Date.now() + expires_in_minutes * 60 * 1000);
-
-    // Generate new invite token
-    const newInviteToken = require('crypto').randomBytes(32).toString('hex');
-
-    // Update the invitation with new token and expiry
-    const updateResult = await pool.query(
-      `UPDATE guru_invites
-       SET invite_token = $1,
-           expires_at = $2
-       WHERE id = $3
-       RETURNING id, invite_token, expires_at, email, role`,
-      [newInviteToken, newExpiresAt, originalInvite.id]
-    );
-
-    const updatedInvite = updateResult.rows[0];
-
-    // Build registration URL
-    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const registrationUrl = `${baseUrl}/auth/guru/register?token=${newInviteToken}`;
-
-    // SEND EMAIL with new invite link
-    try {
-      await sendGuruInviteResendEmail({
-        email: updatedInvite.email,
-        registrationUrl,
-        expiresInMinutes: expires_in_minutes,
-      });
-    } catch (emailError) {
-      console.warn(`[GURU INVITE RESEND] ⚠️ Email failed for ${updatedInvite.email}:`, emailError.message);
-      // Continue - don't fail API if email delivery fails
-    }
-
-    // Return success response
-    return res.status(200).json({
-      error: false,
-      message: `New invitation sent to ${updatedInvite.email}! Check your inbox. This link expires in ${expires_in_minutes} minutes.`,
-      data: {
-        email: updatedInvite.email,
-        resent_at: new Date(),
-        expires_at: updatedInvite.expires_at,
-        expires_in_minutes: expires_in_minutes,
-        invite_token: updatedInvite.invite_token,
-        registration_url: registrationUrl,
-      },
-    });
-
-  } catch (err) {
-    console.error("Resend guru invite error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "Unable to resend invitation. Please try again later.",
+      message: "An error occurred while validating the invite token. Please try again later.",
       data: null,
     });
   }
 }
 
-/**
- * POST /api/v1/auth/guru/register
- * Guru Registration via Invite Token (Module 4: Guru — Registration via Invite)
- * 
- * Requirements:
- * - Validate invite token: check not expired, check not already used
- * - Create user record with role = GURU
- * - Set credit_balance = -295 (via guru_profile), level = 1, sprint_active = false
- * - Return JWT access token on success
- * - Invalidate invite token immediately after successful registration to prevent reuse
- * - Reject duplicate email registration
- * 
- * Request: { invite_token, name, contract_name, password, phone }
- * Response: { access_token, user: { id, name, email, role, credit_balance: -295, level: 1, sprint_active: false } }
- *
- * Error Responses:
- * - 400: Missing required fields
- * - 401: Invite token invalid
- * - 410: Invite token expired
- * - 409: Email already registered
- */
-async function guruRegisterViaInvite(req, res) {
-  const client = await pool.connect();
-  try {
-    const { invite_token, contract_name, password, phone, avatar_url } = req.body;
-    // `full_name` is accepted too, so this matches the self-registration application (POST /gurus/applications)
-    const name = req.body.name ?? req.body.full_name;
-    const avatarUrl = typeof avatar_url === "string" && avatar_url.trim() ? avatar_url.trim() : null;
-
-    // VALIDATION: All fields are required
-    const errors = [];
-    if (!invite_token) errors.push("Invite token is required.");
-    if (!name || typeof name !== "string" || name.trim().length === 0) errors.push("Name is required.");
-    if (!contract_name || typeof contract_name !== "string" || contract_name.trim().length === 0) {
-      errors.push("Contract name is required.");
-    }
-    if (!password) errors.push("Password is required.");
-    if (!phone) errors.push("Phone number is required.");
-
-    if (errors.length > 0) {
-      return res.status(400).json({
-        error: true,
-        message: `Please complete all required fields. ${errors.join(" ")}`,
-        data: {
-          errors,
-          invite_token: invite_token || null
-        },
-      });
-    }
-
-    // VALIDATION: Password strength
-    const passwordErrors = validatePasswordStrength(password);
-    if (passwordErrors.length > 0) {
-      return res.status(400).json({
-        error: true,
-        message: `Please choose a stronger password. ${passwordErrors.join(" ")}`,
-        data: {
-          errors: passwordErrors,
-          invite_token
-        },
-      });
-    }
-
-    // VALIDATION: Phone format (E.164)
-    const phoneRegex = /^\+[1-9]\d{1,14}$/; // E.164 format
-    if (!phoneRegex.test(phone)) {
-      return res.status(422).json({
-        error: true,
-        message: "Phone number must be in E.164 format (e.g., +447911123456).",
-        data: {
-          phone,
-          invite_token
-        },
-      });
-    }
-
-    // STEP 1: Validate invite token
-    const inviteResult = await client.query(
-      `SELECT * FROM guru_invites WHERE invite_token = $1`,
-      [invite_token]
-    );
-
-    if (inviteResult.rowCount === 0) {
-      client.release();
-      return res.status(401).json({
-        error: true,
-        message: "This invitation link is invalid or has been removed.",
-        data: { invite_token },
-      });
-    }
-
-    const inviteData = inviteResult.rows[0];
-
-    // Check if invite is already used
-    if (inviteData.used_at) {
-      client.release();
-      return res.status(410).json({
-        error: true,
-        message: "This invitation has already been accepted. Please log in to your account.",
-        data: { invite_token },
-      });
-    }
-
-    // Check if invite is expired
-    if (new Date(inviteData.expires_at) < new Date()) {
-      client.release();
-      return res.status(410).json({
-        error: true,
-        message: "This invitation has expired. Please request a new invitation.",
-        data: { invite_token },
-      });
-    }
-
-    // The invite already created a real (password-less) placeholder account
-    // when the King sent it, so the King could see/edit/approve it beforehand.
-    // Find that row now instead of expecting none to exist.
-    const existingUserResult = await client.query(
-      "SELECT id, password_hash FROM users WHERE email = $1",
-      [inviteData.email]
-    );
-
-    if (existingUserResult.rowCount === 0) {
-      client.release();
-      return res.status(404).json({
-        error: true,
-        message: "No account was found for this invitation. Please contact support.",
-        data: { email: inviteData.email },
-      });
-    }
-
-    const placeholderUser = existingUserResult.rows[0];
-
-    // A password already set means this account finished registration before
-    // (e.g. the invite was accepted already, or the email is a real, separate account).
-    if (placeholderUser.password_hash) {
-      client.release();
-      return res.status(409).json({
-        error: true,
-        message: "This email address is already registered. Please log in instead.",
-        data: { email: inviteData.email },
-      });
-    }
-
-    // If the King rejected or blocked this Guru before they accepted, don't let
-    // acceptance silently override that decision.
-    const applicationResult = await client.query(
-      `SELECT account_status FROM guru_applications WHERE user_id = $1`,
-      [placeholderUser.id]
-    );
-    if (applicationResult.rowCount > 0 && applicationResult.rows[0].account_status === "rejected") {
-      client.release();
-      return res.status(403).json({
-        error: true,
-        message: "This invitation was rejected by the King's Account. Please contact them for details.",
-        data: { email: inviteData.email },
-      });
-    }
-    const blockedUserResult = await client.query(
-      `SELECT account_status FROM users WHERE id = $1`,
-      [placeholderUser.id]
-    );
-    if (blockedUserResult.rows[0]?.account_status === "blocked") {
-      client.release();
-      return res.status(403).json({
-        error: true,
-        message: "This account has been blocked. Please contact support.",
-        data: { email: inviteData.email },
-      });
-    }
-
-    // STEP 2: Activate the placeholder user record with role = GURU
-    await client.query('BEGIN');
-
-    const passwordHash = await bcrypt.hash(password, 12);
-
-    // console.log(`[GURU REGISTER] Activating placeholder user for email: ${inviteData.email}`);
-
-    const userResult = await client.query(
-      `UPDATE users SET
-         password_hash = $1,
-         name = $2,
-         phone = $3,
-         role = $4,
-         status = $5,
-         account_status = $6,
-         email_status = $7,
-         email_verified_at = COALESCE(email_verified_at, NOW()),
-         guru_active = TRUE,
-         guru_active_until = NOW() + INTERVAL '1 year',
-         guru_activation_date = NOW(),
-         avatar_url = COALESCE($8, avatar_url),
-         updated_at = NOW()
-       WHERE id = $9
-       RETURNING *`,
-      [
-        passwordHash,
-        name.trim(),
-        phone,
-        'guru',
-        'active',
-        'active', // Guru from invite is active immediately
-        'verified', // Email is verified via invite
-        avatarUrl,
-        placeholderUser.id,
-      ]
-    );
-
-    if (!userResult.rows[0]) {
-      throw new Error('User creation failed - no user returned');
-    }
-
-    const user = userResult.rows[0];
-    // console.log(`[GURU REGISTER] User created with ID: ${user.id}`);
-
-    // STEP 3: Create guru_profile with credit_balance = -295, level = 1
-    // Note: credit_balance is stored in guru_profiles as licence_balance
-    // According to API contract: credit_balance: -295, level: 1, sprint_active: false
-    // A profile may already exist if the King approved this application (via
-    // the normal approve endpoint) before the invitee accepted — don't duplicate it.
-    const existingGuruProfile = await client.query(
-      `SELECT id FROM guru_profiles WHERE user_id = $1 LIMIT 1`,
-      [user.id]
-    );
-    if (existingGuruProfile.rowCount === 0) {
-      await client.query(
-        `INSERT INTO guru_profiles (user_id, level, licence_balance, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [user.id, 1, -295]
-      );
-    }
-    // console.log(`[GURU REGISTER] Guru profile ensured for user ${user.id}`);
-
-    // STEP 4: Store Guru application metadata from invite registration. A row
-    // may already exist here (created when the King sent the invite), so this
-    // must flip it from 'pending' to 'approved' on the UPDATE branch too —
-    // invited Gurus need no separate King approval once they accept.
-    await client.query(
-      `INSERT INTO guru_applications
-        (user_id, contract_name, phone, avatar_url, agreed_to_terms, agreed_to_guru_agreement, account_status, activation_fee_status, reviewed_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, TRUE, TRUE, 'approved', 'not_required', NOW(), NOW(), NOW())
-       ON CONFLICT (user_id) DO UPDATE
-       SET contract_name = EXCLUDED.contract_name,
-           phone = EXCLUDED.phone,
-           avatar_url = COALESCE(EXCLUDED.avatar_url, guru_applications.avatar_url),
-           agreed_to_terms = TRUE,
-           agreed_to_guru_agreement = TRUE,
-           account_status = 'approved',
-           activation_fee_status = COALESCE(guru_applications.activation_fee_status, 'not_required'),
-           reviewed_at = NOW(),
-           updated_at = NOW()`,
-      [
-        user.id,
-        contract_name.trim(),
-        phone,
-        avatarUrl,
-      ]
-    );
-
-    // STEP 5: Invalidate invite token
-    // console.log(`[GURU REGISTER] Invalidating invite token`);
-    await client.query(
-      `UPDATE guru_invites SET used_at = NOW() WHERE id = $1`,
-      [inviteData.id]
-    );
-
-    // STEP 5B: Ensure guru has a referral code (for promoters). Expose in response — must be outer-scoped.
-    let referralCode = null;
-    const existingReferral = await client.query(
-      `SELECT referral_code FROM guru_referrals WHERE guru_id = $1 AND revoked_at IS NULL LIMIT 1`,
-      [user.id]
-    );
-    if (existingReferral.rowCount > 0) {
-      referralCode = existingReferral.rows[0].referral_code;
-    } else {
-      let created = false;
-      let attempts = 0;
-      while (!created && attempts < 10) {
-        const code = ReferralService.generateReferralCode();
-        try {
-          const insertResult = await client.query(
-            `INSERT INTO guru_referrals (guru_id, referral_code, created_at)
-             VALUES ($1, $2, NOW())
-             ON CONFLICT (referral_code) DO NOTHING
-             RETURNING id`,
-            [user.id, code]
-          );
-          if (insertResult.rowCount > 0) {
-            referralCode = code;
-            created = true;
-          }
-        } catch (refErr) {
-          if (refErr && refErr.code !== "23505") {
-            throw refErr;
-          }
-        }
-        attempts++;
-      }
-      if (!created) {
-        throw new Error("Unable to create guru referral code");
-      }
-    }
-
-    // console.log(`[GURU REGISTER] Committing transaction`);
-    await client.query('COMMIT');
-    // console.log(`[GURU REGISTER] Transaction committed successfully`);
-    
-    client.release();
-
-    // STEP 6: Create session AFTER transaction commits (separate DB connection)
-    // console.log(`[GURU REGISTER] Creating session for user ${user.id}`);
-    const session = await createSession({
-      userId: user.id,
-      ip: req.ip,
-      userAgent: req.headers["user-agent"],
-      roles: ['guru'],
-      rolesVersion: user.roles_version || 1,
-    });
-    // console.log(`[GURU REGISTER] Session created successfully`);
-
-    // STEP 7: Return response per API contract
-    return res.status(201).json({
-      error: false,
-      message: "Your Guru account has been created. Welcome aboard! You are now logged in.",
-      data: {
-        access_token: session.accessToken,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          avatar_url: user.avatar_url,
-          role: 'GURU',
-          contract_name: contract_name.trim(),
-          credit_balance: -295,
-          level: 1,
-          sprint_active: false,
-          referral_code: referralCode,
-          email_verification_sent: false,
-        },
-        expires_at: session.expiresAt,
-      },
-    });
-
-  } catch (err) {
-    // Only rollback if client is still in transaction
-    try {
-      await client.query('ROLLBACK');
-    } catch (_) { }
-    try {
-      client.release();
-    } catch (_) { }
-    console.error("Guru registration error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "An error occurred during Guru registration. Please try again later.",
-      data: null,
-    });
-  }
-}
 
 module.exports = {
   kingsRegister,
@@ -3854,15 +2772,9 @@ module.exports = {
   setActiveRole,
   // OTP verification
   verifyOtpEmail,
-  // Guru checkout
-  guruCheckout,
   // Settings module - change password
   changePasswordV1,
-  // Guru registration via invite
-  guruRegisterViaInvite,
-  createGuruInvite,
-  resendGuruInvite,
-  // Promoter registration via referral
+  // Promoter registration via King invite
   promoterRegisterViaReferral,
   validateReferralToken,
   createPromoterReferralInvite,

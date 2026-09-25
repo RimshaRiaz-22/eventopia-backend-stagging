@@ -5,16 +5,9 @@ const {
   approvePromoterApplication,
   getEventAuditLogs,
   getEventMetrics,
-  createPromoterInvite,
-  activateGuru,
-  updateGuruLevel,
-  attachPromoterToGuru,
-  detachPromoterFromGuru,
   completeEvent,
   cancelEvent,
   approveCancellationRequest,
-  listPromoters,
-  getPromoter,
   approvePendingEvent,
   listPendingApprovalEvents,
   listRefundRequests,
@@ -49,15 +42,14 @@ const {
 } = require("../controllers/admin.controller");
 
 const {
-  listGurus,
-  getGuruDetails,
-  getGuruApplication,
-  updateGuru,
-  blockGuru,
-  unblockGuru,
-  deleteGuru,
+  listPromoters,
+  getPromoterDetails,
+  updatePromoter,
+  blockPromoter,
+  unblockPromoter,
+  deletePromoter,
   updateApplicationStatus,
-} = require("../controllers/adminGuru.controller");
+} = require("../controllers/adminPromoter.controller");
 
 const {
   getHealthSummary,
@@ -86,26 +78,20 @@ router.get("/territories/:id", requireRole("kings_account", "founder", "admin"),
 router.post("/territories", requireRole("kings_account", "founder", "admin"), createTerritory);
 router.patch("/territories/:id", requireRole("kings_account", "founder", "admin"), updateTerritory);
 
-// Guru module (King's Account / founder / admin)
-// Add a Guru by invite: POST /auth/gurus/invites. Order matters: fixed paths before "/gurus/:guruId".
-const guruAdmin = requireRole("kings_account", "founder", "admin");
-router.post("/gurus/create-invite", guruAdmin, createPromoterInvite);
-router.get("/gurus", guruAdmin, listGurus);
-router.get("/gurus/:guruId", guruAdmin, getGuruDetails);
-router.patch("/gurus/:guruId", guruAdmin, updateGuru);
-router.patch("/gurus/:guruId/application-status", guruAdmin, updateApplicationStatus);
-router.delete("/gurus/:guruId", guruAdmin, deleteGuru);
-router.post("/gurus/:guruId/block", guruAdmin, blockGuru);
-router.post("/gurus/:guruId/unblock", guruAdmin, unblockGuru);
-router.post("/gurus/:guruId/level", guruAdmin, updateGuruLevel);
-router.post("/gurus/:guruId/promoters/:promoterId/attach", guruAdmin, attachPromoterToGuru);
-router.post("/gurus/:guruId/promoters/:promoterId/detach", guruAdmin, detachPromoterFromGuru);
-router.post("/gurus/:guruId/activate", guruAdmin, activateGuru);
+// Promoter module (King's Account / founder / admin)
+// Invite a Promoter by email: POST /auth/promoters/invites (accepted invites need no approval).
+// Self-registered Promoters wait for approval: PATCH /admin/promoters/:promoterId/application-status
+const promoterAdmin = requireRole("kings_account", "founder", "admin");
+router.get("/promoters", promoterAdmin, listPromoters);
+router.get("/promoters/:promoterId", promoterAdmin, getPromoterDetails);
+router.patch("/promoters/:promoterId", promoterAdmin, updatePromoter);
+router.patch("/promoters/:promoterId/application-status", promoterAdmin, updateApplicationStatus);
+router.post("/promoters/:promoterId/block", promoterAdmin, blockPromoter);
+router.post("/promoters/:promoterId/unblock", promoterAdmin, unblockPromoter);
+router.delete("/promoters/:promoterId", promoterAdmin, deletePromoter);
+router.post("/promoters/:applicationId/approve", promoterAdmin, approvePromoterApplication);
 
 router.use(requireFounderOrAdmin);
-
-// Promoter application approval
-router.post("/promoters/:applicationId/approve", approvePromoterApplication);
 
 // Event audit and metrics
 router.get("/events/audit-logs", getEventAuditLogs);
@@ -114,10 +100,6 @@ router.get("/events/metrics", getEventMetrics);
 // Event completion and cancellation
 router.post("/events/:eventId/complete", completeEvent);
 router.post("/events/:eventId/cancel", cancelEvent);
-
-// Promoter management routes (admin only)
-router.get("/promoters", listPromoters);
-router.get("/promoters/:promoterId", getPromoter);
 
 // Event management routes (admin only)
 router.get("/events", listEvents);

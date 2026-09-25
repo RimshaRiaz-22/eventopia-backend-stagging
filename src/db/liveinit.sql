@@ -904,7 +904,7 @@ CREATE TABLE IF NOT EXISTS promoter_referral_invites (
   email TEXT NOT NULL,
   name TEXT NOT NULL,
   referral_token TEXT UNIQUE NOT NULL,
-  guru_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  guru_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
   kings_account_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   expires_at TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '15 minutes'),
   used_at TIMESTAMP NULL,
@@ -1007,7 +1007,7 @@ CREATE TABLE IF NOT EXISTS promoter_referrals (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   referrer_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   referred_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
-  guru_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  guru_id BIGINT REFERENCES users(id) ON DELETE RESTRICT,
   territory_code TEXT NOT NULL DEFAULT 'UK',
   referral_link_token TEXT UNIQUE NOT NULL,
   start_date TIMESTAMPTZ,
@@ -1983,3 +1983,22 @@ CREATE INDEX IF NOT EXISTS idx_alert_audit_logs_alert ON alert_audit_logs(alert_
 CREATE INDEX IF NOT EXISTS idx_alert_audit_logs_territory ON alert_audit_logs(territory_id);
 CREATE INDEX IF NOT EXISTS idx_alert_audit_logs_action ON alert_audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_alert_audit_logs_created ON alert_audit_logs(created_at DESC);
+
+/* ================================
+   Admin Promoter Actions Audit Log (King's Promoter module)
+   ================================ */
+CREATE TABLE IF NOT EXISTS admin_promoter_actions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  admin_id BIGINT NOT NULL REFERENCES users(id),
+  promoter_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  action_type TEXT NOT NULL, -- 'application_approved', 'application_rejected', 'profile_update', 'block', 'unblock', 'delete'
+  old_value TEXT,
+  new_value TEXT,
+  reason TEXT,
+  metadata JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_admin ON admin_promoter_actions(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_promoter ON admin_promoter_actions(promoter_id);
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_type ON admin_promoter_actions(action_type);

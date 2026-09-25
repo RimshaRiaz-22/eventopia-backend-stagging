@@ -24,7 +24,7 @@ async function completePastEvents() {
     if (result.rowCount > 0) {
       const eventIds = result.rows.map(row => row.id);
 
-      // Update all completed events (also set settlement_status for My Gurus metrics)
+      // Update all completed events (also set settlement_status)
       await client.query(
         `UPDATE events
          SET completion_status = 'completed',

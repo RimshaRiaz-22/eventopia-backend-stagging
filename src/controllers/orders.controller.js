@@ -478,7 +478,6 @@ const confirmOrder = async (req, res) => {
            o.*,
            e.territory_id,
            e.promoter_id,
-           e.guru_id,
            e.id AS event_id
          FROM orders o
          JOIN events e ON e.id = o.event_id

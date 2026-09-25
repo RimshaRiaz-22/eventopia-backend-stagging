@@ -52,11 +52,11 @@ const createRedemptionRequest = async (user, requested_amount, request_note) => 
   const { id: userId, role } = user;
 
   // 1️⃣ Validate role
-  if (!['promoter', 'guru'].includes(role)) {
+  if (role !== 'promoter') {
     throw {
       status: 403,
       code: 'REWARD_ACCESS_DENIED',
-      message: 'Only promoters and gurus can create redemption requests'
+      message: 'Only promoters can create redemption requests'
     };
   }
 
