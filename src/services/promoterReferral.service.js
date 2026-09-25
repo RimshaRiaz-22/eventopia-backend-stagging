@@ -33,14 +33,6 @@ async function ensureUkReferralPool(client) {
   return created.rows[0];
 }
 
-async function getReferrerGuruId(client, referrerId) {
-  const guruLink = await client.query(
-    `SELECT guru_user_id FROM promoter_guru_links WHERE promoter_user_id = $1 LIMIT 1`,
-    [referrerId]
-  );
-  return guruLink.rows[0]?.guru_user_id || null;
-}
-
 async function createPromoterReferralLink(referrerId) {
   const client = await pool.connect();
   try {
@@ -104,20 +96,13 @@ async function createPromoterReferralLink(referrerId) {
       throw err;
     }
 
-    const guruId = await getReferrerGuruId(client, referrerId);
-    if (!guruId) {
-      const err = new Error("Referrer must be linked to a Guru before generating referral links.");
-      err.status = 400;
-      throw err;
-    }
-
     const token = generateReferralToken();
     const created = await client.query(
       `INSERT INTO promoter_referrals
-        (referrer_id, guru_id, territory_code, referral_link_token, status, payout_amount, created_at, updated_at)
-       VALUES ($1, $2, 'UK', $3, 'link_issued', $4, NOW(), NOW())
+        (referrer_id, territory_code, referral_link_token, status, payout_amount, created_at, updated_at)
+       VALUES ($1, 'UK', $2, 'link_issued', $3, NOW(), NOW())
        RETURNING id, referral_link_token, status, payout_amount, created_at`,
-      [referrerId, guruId, token, REFERRAL_PAYOUT_PENCE]
+      [referrerId, token, REFERRAL_PAYOUT_PENCE]
     );
 
     await client.query("COMMIT");
@@ -182,7 +167,6 @@ async function getPromoterReferrals(promoterId, options = {}) {
          pr.id,
          pr.referrer_id,
          pr.referred_id,
-         pr.guru_id,
          pr.territory_code,
          pr.referral_link_token,
          pr.start_date,
@@ -218,7 +202,6 @@ async function getPromoterReferrals(promoterId, options = {}) {
          pr.id,
          pr.referrer_id,
          pr.referred_id,
-         pr.guru_id,
          pr.territory_code,
          pr.start_date,
          pr.expiry_date,
@@ -299,7 +282,7 @@ async function claimReferralOnRegister({ token, referredUserId }) {
     await client.query("BEGIN");
 
     const referralRes = await client.query(
-      `SELECT id, referrer_id, guru_id, territory_code, status, referred_id
+      `SELECT id, referrer_id, territory_code, status, referred_id
        FROM promoter_referrals
        WHERE referral_link_token = $1
        LIMIT 1`,
@@ -353,23 +336,22 @@ async function claimReferralOnRegister({ token, referredUserId }) {
            status = 'active',
            updated_at = NOW()
        WHERE id = $1
-       RETURNING id, referrer_id, referred_id, guru_id, start_date, expiry_date, status`,
+       RETURNING id, referrer_id, referred_id, start_date, expiry_date, status`,
       [referral.id, referredUserId]
     );
 
     const updatedAttr = await client.query(
       `UPDATE user_attributions
-       SET guru_id = $2,
-           referral_code = $3,
+       SET referral_code = $2,
            signed_up_via_referral = TRUE
        WHERE user_id = $1`,
-      [referredUserId, referral.guru_id, token]
+      [referredUserId, token]
     );
     if (updatedAttr.rowCount === 0) {
       await client.query(
-        `INSERT INTO user_attributions (user_id, guru_id, referral_code, signed_up_via_referral)
-         VALUES ($1, $2, $3, TRUE)`,
-        [referredUserId, referral.guru_id, token]
+        `INSERT INTO user_attributions (user_id, referral_code, signed_up_via_referral)
+         VALUES ($1, $2, TRUE)`,
+        [referredUserId, token]
       );
     }
 

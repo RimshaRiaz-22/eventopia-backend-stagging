@@ -17,11 +17,11 @@ const ensureRewardAccess = async (req) => {
 
   const role = result.rows[0]?.role;
 
-  if (!['promoter', 'guru'].includes(role)) {
+  if (role !== 'promoter') {
     throw {
       status: 403,
       code: 'REWARD_ACCESS_DENIED',
-      message: 'Only promoters and gurus can access reward shop'
+      message: 'Only promoters can access reward shop'
     };
   }
 

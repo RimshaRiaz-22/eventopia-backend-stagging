@@ -2,6 +2,7 @@ const pool = require("../db");
 const { resolveTier, TIERS } = require("../services/tierResolver.service");
 
 // Day 8 baseline split constants mapped by tier label.
+// The Guru role no longer exists: its share is retained by Eventopia (added to the eventopia figure in formatTierRow).
 const SPLITS_BY_TIER = {
   1: { promoter: "0.50", guru: "0.30", eventopia: "0.29", reinvestment: "0.00", vat_amount: "0.31", noda_fee: "0.35", distributable_pool: "1.19" },
   2: { promoter: "0.50", guru: "0.35", eventopia: "0.40", reinvestment: "0.00", vat_amount: "0.40", noda_fee: "0.35", distributable_pool: "1.60" },
@@ -67,8 +68,7 @@ function formatTierRow(t) {
     distributable_pool: split.distributable_pool,
     splits: {
       promoter: split.promoter,
-      guru: split.guru,
-      eventopia: split.eventopia,
+      eventopia: toMoneyString(Number(split.eventopia) + Number(split.guru)),
       reinvestment: split.reinvestment,
     },
   };

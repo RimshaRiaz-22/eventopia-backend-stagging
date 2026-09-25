@@ -1,5 +1,5 @@
 /**
- * Credit Allocation — creates projected credit for Promoter and Guru
+ * Credit Allocation — creates projected credit for the Promoter (and an active referrer)
  * on every ticket purchase. Writes to credit_wallets (projected_balance) and ledger_entries (audit).
  */
 
@@ -11,24 +11,25 @@ const {
   REFERRAL_PER_TICKET_PENCE,
 } = require("./promoterReferral.service");
 
-// Per-ticket credit split in pence by tier (Promoter, Guru). Eventopia share not credited to a role.
+// Per-ticket credit split in pence by tier. The Guru role no longer exists, so the share that used to be
+// credited to a Guru (`retained`) is kept by Eventopia. It is not credited to any role, except that an
+// active promoter referral is paid out of it (see below).
 const TIER_CREDIT_SPLITS_PENCE = {
-  1: { promoter: 50, guru: 30 },
-  2: { promoter: 65, guru: 40 },
-  3: { promoter: 95, guru: 55 },
-  4: { promoter: 130, guru: 75 },
-  5: { promoter: 180, guru: 100 },
-  6: { promoter: 250, guru: 140 },
+  1: { promoter: 50, retained: 30 },
+  2: { promoter: 65, retained: 40 },
+  3: { promoter: 95, retained: 55 },
+  4: { promoter: 130, retained: 75 },
+  5: { promoter: 180, retained: 100 },
+  6: { promoter: 250, retained: 140 },
 };
 
 /**
- * Allocate projected credit to promoter and guru for a ticket purchase.
+ * Allocate projected credit to the promoter (and referrer, if any) for a ticket purchase.
  * @param {Object} params
  * @param {number} params.event_id
  * @param {number} params.tier_label - 1-6
  * @param {number} params.quantity
  * @param {number} params.promoter_id
- * @param {number|null} params.guru_id
  * @param {number} params.territory_id
  * @param {number} [params.order_id] - for ledger reference
  * @param {Object} [options.client] - pg Client for transaction
@@ -39,7 +40,6 @@ async function allocateCredit(
     tier_label,
     quantity,
     promoter_id,
-    guru_id,
     territory_id,
     order_id = null,
   },
@@ -57,35 +57,21 @@ async function allocateCredit(
       user_id: promoter_id,
       amount_pence: splits.promoter * quantity,
     },
-    {
-      role: "guru",
-      user_id: guru_id,
-      amount_pence: splits.guru * quantity,
-    },
   ].filter((e) => e.user_id != null && e.amount_pence > 0);
 
   // Promoter -> Promoter referral mode:
-  // divert £0.30/ticket from guru share to referrer while referral is active.
+  // pay £0.30/ticket to the referrer while the referral is active. It comes out of the share Eventopia
+  // retains (the former Guru share); whatever is not diverted stays with Eventopia.
   const activeReferral = await getActiveReferralByReferredPromoter(promoter_id);
   if (activeReferral) {
-    const diversionPerTicket = REFERRAL_PER_TICKET_PENCE;
-    const referralAmount = diversionPerTicket * quantity;
-
-    const guruEntry = entries.find((e) => e.role === "guru");
-    if (guruEntry) {
-      const diverted = Math.min(guruEntry.amount_pence, referralAmount);
-      guruEntry.amount_pence = guruEntry.amount_pence - diverted;
-      if (guruEntry.amount_pence <= 0) {
-        const idx = entries.findIndex((e) => e.role === "guru");
-        if (idx >= 0) entries.splice(idx, 1);
-      }
-      if (diverted > 0) {
-        entries.push({
-          role: "referrer",
-          user_id: activeReferral.referrer_id,
-          amount_pence: diverted,
-        });
-      }
+    const referralAmount = REFERRAL_PER_TICKET_PENCE * quantity;
+    const diverted = Math.min(splits.retained * quantity, referralAmount);
+    if (diverted > 0) {
+      entries.push({
+        role: "referrer",
+        user_id: activeReferral.referrer_id,
+        amount_pence: diverted,
+      });
     }
   }
 

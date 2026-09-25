@@ -81,7 +81,7 @@ Defines API endpoints and maps URL paths to controllers.
 Examples:
 - `auth.routes.js`: login/register/token/auth routes.
 - `events.routes.js`, `tickets.routes.js`, `orders.routes.js`: event ticketing flow.
-- `gurus.routes.js`, `promoters.routes.js`: role/business domain routes.
+- `promoters.routes.js`: role/business domain routes.
 - `escrow.routes.js`, `ledger.routes.js`, `wallet.routes.js`, `credit.routes.js`: financial routes.
 - `index.js`: consolidated route registry used by `/api`.
 - `v1.routes.js`: namespaced legacy/contract routes under `/api/v1`.
@@ -105,7 +105,7 @@ Major service categories:
 - **Auth/session/security:** `session.service.js`, `accessToken.service.js`, `otp.service.js`, `access.service.js`
 - **Events/tickets/orders:** `orderFulfillment.service.js`, `orderStripePayment.service.js`, `settledTicket.service.js`, `qr.service.js`
 - **Finance/ledger/escrow:** `ledgerCore.service.js`, `platformLedger.service.js`, `escrow.service.js`, `escrowLiability.service.js`, `walletMe.service.js`
-- **Role ecosystems:** `guru.service.js`, `promoterReferral.service.js`, `territoryLicenceInventory.service.js`
+- **Role ecosystems:** `promoterReferral.service.js`, `territoryLicenceInventory.service.js`
 - **Integrations:** `stripeClient.js`, `geonames.service.js`, `email.service.js`, `nodaPayment.service.js`
 - **Schedulers/jobs/monitoring:** `scheduler.service.js`, `serviceFeeJob.service.js`, `jobMonitoring.service.js`
 

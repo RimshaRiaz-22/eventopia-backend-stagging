@@ -1,22 +1,14 @@
 
 const pool = require("../db");
 const { UNLOCK_THRESHOLD } = require("./promoterCreditWallet.service");
-const { countSettledTicketsForPromoter, countSettledTicketsForGuru } = require("./settledTicket.service");
+const { countSettledTicketsForPromoter } = require("./settledTicket.service");
 
-const WALLET_ROLES = ["promoter", "guru"];
-
-const SPRINT_TICKETS_REQUIRED = 5000;
+const WALLET_ROLES = ["promoter"];
 
 function penceToGbp(pence) {
   const n = Number(pence);
   if (!Number.isFinite(n)) return 0;
   return Number((n / 100).toFixed(2));
-}
-
-function parseGuruLevel(levelRaw, levelStatusRaw) {
-  const s = String(levelRaw || levelStatusRaw || "L1").toUpperCase();
-  const m = s.match(/L?(\d+)/);
-  return m ? Math.min(3, Math.max(1, parseInt(m[1], 10))) : 1;
 }
 
 function isWalletAccessBlocked(userRoles) {
@@ -28,13 +20,13 @@ function isWalletAccessBlocked(userRoles) {
 }
 
 /**
- * First wallet-eligible role (promoter → guru) that has a credit_wallets row.
+ * First wallet-eligible role (promoter) that has a credit_wallets row.
  * @param {number} userId
  * @param {string[]} userRoles
  * @returns {Promise<string|null>}
  */
 async function resolveWalletRole(userId, userRoles) {
-  const order = ["promoter", "guru"];
+  const order = ["promoter"];
   for (const role of order) {
     if (!userRoles.includes(role)) continue;
     const w = await pool.query(`SELECT 1 FROM credit_wallets WHERE user_id = $1 AND role = $2 LIMIT 1`, [
@@ -98,32 +90,6 @@ async function loadPromoterMeta(userId) {
     serviceFeeRate: pcw.rowCount ? Number(pcw.rows[0].service_fee_rate) : 0.1,
     territoryId: pp.rowCount ? pp.rows[0].territory_id : null,
   };
-}
-
-async function loadGuruMeta(userId) {
-  const gp = await pool.query(`SELECT level FROM guru_profiles WHERE user_id = $1 LIMIT 1`, [userId]);
-  const tl = await pool.query(
-    `SELECT level_status, service_fee_rate_current, territory_id
-     FROM territory_licences
-     WHERE user_id = $1 AND licence_status IN ('ACTIVE', 'CLEARED')
-     ORDER BY updated_at DESC NULLS LAST
-     LIMIT 1`,
-    [userId]
-  );
-  const level = parseGuruLevel(gp.rows[0]?.level, tl.rows[0]?.level_status);
-  const territoryId = tl.rows[0]?.territory_id ?? null;
-  const serviceFeeRate = tl.rows[0]?.service_fee_rate_current != null
-    ? Number(tl.rows[0].service_fee_rate_current)
-    : level >= 3 ? 0.15 : level >= 2 ? 0.15 : 0.2;
-  return { level, territoryId, serviceFeeRate };
-}
-
-function quarterWindowUtc() {
-  const now = new Date();
-  const q = Math.floor(now.getUTCMonth() / 3);
-  const start = new Date(Date.UTC(now.getUTCFullYear(), q * 3, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), (q + 1) * 3, 1, 0, 0, 0, 0));
-  return { windowStart: start, windowExpires: end };
 }
 
 /**
@@ -221,48 +187,7 @@ async function getWalletMeForUser(userId, userRoles) {
     return { ok: true, body: base };
   }
 
-  // Only guru wallets remain after the promoter branch
-  const meta = await loadGuruMeta(userId);
-  base.level = meta.level;
-  base.territory_id = meta.territory_id != null ? String(meta.territory_id) : null;
-  base.service_fee.rate = meta.serviceFeeRate;
-  base.unlock_status = { unlocked: true };
-
-  if (meta.level >= 3) {
-    const nw = Number((confirmedGbp * 0.5).toFixed(2));
-    base.balances.net_withdrawable = nw;
-    base.withdrawal_eligibility = {
-      eligible_percent: 50,
-      withdrawable_amount: nw,
-      reason: "50% of confirmed credit withdrawable monthly",
-    };
-  } else if (meta.level === 2) {
-    base.balances.sprint_credit = confirmedGbp;
-    base.balances.net_withdrawable = 0;
-    base.withdrawal_eligibility = {
-      eligible_percent: 0,
-      reason: "No cash withdrawal at Level 2 without enhanced licence. All confirmed credit held as sprint credit.",
-    };
-    const { windowStart, windowExpires } = quarterWindowUtc();
-    const ticketsInWindow = await countSettledTicketsForGuru(userId, windowStart.toISOString(), new Date().toISOString());
-    const daysRemaining = Math.max(0, Math.ceil((windowExpires - Date.now()) / 86400000));
-    base.sprint = {
-      active: true,
-      tickets_in_window: ticketsInWindow,
-      tickets_required: SPRINT_TICKETS_REQUIRED,
-      progress_percent: Number(Math.min(100, (ticketsInWindow / SPRINT_TICKETS_REQUIRED) * 100).toFixed(1)),
-      window_start: windowStart.toISOString(),
-      window_expires: windowExpires.toISOString(),
-      days_remaining: daysRemaining,
-    };
-  } else {
-    base.balances.net_withdrawable = 0;
-    base.withdrawal_eligibility = {
-      eligible_percent: 0,
-      reason: "Withdrawals not available at Level 1",
-    };
-  }
-  return { ok: true, body: base };
+  return { ok: false, code: "NO_WALLET" };
 }
 
 module.exports = {

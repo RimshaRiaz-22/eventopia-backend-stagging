@@ -63,21 +63,6 @@ async function getEventsColumnSet(client) {
 }
 
 /**
- * Helper function to derive Guru attribution from promoter
- */
-async function deriveHierarchyFromPromoter(promoterId) {
-  const result = await pool.query(
-    `SELECT pgl.guru_user_id as guru_id
-    FROM users u
-    LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-    WHERE u.id = $1 AND u.role = 'promoter'`,
-    [promoterId]
-  );
-
-  return result.rows[0] || { guru_id: null };
-}
-
-/**
  * Phase E2: Create event
  * POST /promoter/events
  * Creates draft event with derived hierarchy attribution
@@ -118,9 +103,6 @@ async function createEvent(req, res) {
 
     await client.query("BEGIN");
 
-    // Phase E2: Derive hierarchy attribution from promoter
-    const hierarchy = await deriveHierarchyFromPromoter(promoterId);
-
     // Generate share token if visibility mode is private_link
     let shareToken = null;
     if (visibilityMode === 'private_link') {
@@ -129,7 +111,7 @@ async function createEvent(req, res) {
 
     const eventColumns = await getEventsColumnSet(client);
     const insertColumns = [
-      "promoter_id", "guru_id",
+      "promoter_id",
       "title", "description", "start_at", "end_at", "timezone",
       "format", "access_mode", "visibility", "share_token",
       "venue_name", "venue_address", "lat", "lng",
@@ -137,7 +119,6 @@ async function createEvent(req, res) {
     ];
     const insertValues = [
       promoterId,
-      hierarchy.guru_id,
       title || null,
       description || null,
       startAt || null,

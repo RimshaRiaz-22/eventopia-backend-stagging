@@ -31,11 +31,10 @@ All paths are under `src/`.
 |---|---|
 | `buyer` | Normal ticket buyer (default) |
 | `promoter` | Creates events and sells tickets |
-| `guru` | Recruits promoters |
 | `admin`, `founder`, `staff_*` | Internal roles, **cannot** be self-selected at signup |
-| `kings_account` | Special ledger account with its own OTP login. Invites and approves Gurus |
+| `kings_account` | Special ledger account with its own OTP login. Invites and approves Promoters |
 
-Users pick one of `buyer`, `promoter` or `guru` at signup. The Network Manager role has been removed: registering with it returns `400`, and any leftover Network Manager account is refused at login.
+Users pick one of `buyer` or `promoter` at signup. The Guru and Network Manager roles have been removed: registering with either returns `400`, and any leftover Guru or Network Manager account is refused at login (`403`).
 
 ---
 
@@ -62,8 +61,8 @@ POST /auth/login           -> email + password -> tokens
 Checks, in order:
 1. The user exists and `status` is `active`.
 2. The account is not `blocked`.
-3. The account is not a leftover `network_manager` account (refused with `403`).
-4. `account_status` must be `active`. Promoters and gurus stay `pending` until approved.
+3. The account is not a leftover `network_manager` or `guru` account (refused with `403`).
+4. `account_status` must be `active`. Self-registered promoters stay `pending` until the King approves them.
 5. The password matches (bcrypt).
 
 ### 3. Staying logged in and logging out
@@ -85,43 +84,31 @@ POST /auth/change-password -> (logged in) current + new password, kills all OTHE
 
 `change-password` is mounted from `routes/settings.routes.js`.
 
-### 5. Invite-based signup
-
-| Flow | Created by | Endpoint to register |
-|---|---|---|
-| **Guru invite** | King's Account, founder or admin (`POST /auth/gurus/invites`) | `POST /auth/guru/register` with `invite_token` |
-| **Promoter referral** | Guru (`POST /auth/gurus/promoter/referral-invites`) | `POST /auth/promoter/register` with `referral_token` |
-
-- Invite links expire after **15 minutes** by default (allowed range is 1 to 1440 minutes).
-- Each invite can only be used once.
-- The email comes from the invite, not from the form.
-- `POST /auth/guru/invites/resend` and `POST /auth/promoter/referral-invites/resend` issue a new link when the old one expired.
-- `GET /auth/referrals/validate/:token` lets the frontend check a promoter referral token before showing the form.
-- `POST /admin/gurus/create-invite` creates **promoter** invites only (`role: "promoter"` is required); those are accepted at `POST /auth/register` with `invite_token`. A Guru invite sent to `POST /auth/register` is refused.
-
-### 5b. Guru flows
+### 5. Promoter signup
 
 **A. Invited by the King's Account (active immediately, no approval)**
 
 ```
-POST /auth/gurus/invites                 King sends the invite (email with link, 15 min by default)
-GET  /gurus/invites/validate/:token      public: page verifies the invite is active
-POST /auth/guru/register                 Guru accepts: creates an active Guru and logs them in
+POST /auth/promoters/invites             King sends the invite (email with link, 15 min by default, range 1-1440)
+GET  /auth/referrals/validate/:token     public: page verifies the invite is still valid
+POST /auth/promoter/register             Promoter accepts: name, password, phone + referral_token -> active Promoter, logged in
+POST /auth/promoters/invites/resend      public: new link when the old one expired ({ email } or { referral_token })
 ```
 
-**B. Guru registers by themselves (pending until the King activates)**
+- Each invite can only be used once, and the email comes from the invite, not from the form.
+- Only `kings_account`, `founder` and `admin` can send invites.
+
+**B. Promoter registers by themselves (pending until the King approves)**
 
 ```
-POST /auth/register  { role: "guru" }    account starts as "requested"; OTP is emailed
-POST /auth/otp/verify                    email verified; Guru gets a token to finish the profile
-POST /gurus/applications                 Guru completes the profile; account becomes "pending"
-POST /gurus/activation-fee/commit        Guru chooses upfront or negative balance
-GET  /admin/gurus/applications           King sees the list (?status=pending, ?page=, ?limit=)
-POST /admin/gurus/:applicationId/approve King activates (fee must be committed first)
-POST /admin/gurus/:applicationId/reject  King rejects, body: { rejection_reason }
+POST /auth/register  { role: "promoter" }   account starts as "pending"; OTP is emailed
+POST /auth/otp/verify                       email verified; the Promoter gets a token to finish the application
+POST /promoters/applications                Promoter submits the application; account becomes "pending_approval"
+GET  /admin/promoters?applicationStatus=pending   King sees the list
+PATCH /admin/promoters/:promoterId/application-status   King approves or rejects, body: { status, comment }
 ```
 
-Until the King activates the account, `POST /auth/login` answers `403` (pending approval). Approving revokes the Guru's sessions, so they log in again and get the Guru role. The admin routes allow `kings_account`, `founder` and `admin`.
+Until the King approves, `POST /auth/login` answers `403` (pending approval). Approving revokes the Promoter's sessions, so they log in again. The admin routes allow `kings_account`, `founder` and `admin`.
 
 ### 6. OAuth (Google, Facebook, Clerk)
 
@@ -181,8 +168,9 @@ After that, role guards decide whether the user may use the route:
 - `devices`: optional device tracking
 - `otps`: OTP **hash**, purpose, expiry, attempt count, `consumed_at`
 - `password_reset_tokens`, `email_verification_tokens`
-- `guru_invites`, `promoter_referral_invites`, `guru_referrals`
-- Application tables: `guru_applications`, `promoter_applications`
+- `promoter_referral_invites` (King's invites), `promoter_applications`
+- `admin_promoter_actions`: audit trail of the King's promoter actions
+- Legacy Guru tables (`guru_*`, `promoter_guru_links`) are no longer used but are kept in the database
 
 ---
 

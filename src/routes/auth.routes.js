@@ -1,6 +1,6 @@
 /**
  * Authentication route definitions.
- * Handles public auth flows, OTP verification, OAuth, invite registration, protected account routes, and checkout.
+ * Handles public auth flows, OTP verification, OAuth, King-invited promoter registration and protected account routes.
  */
 
 const express = require("express");
@@ -21,15 +21,11 @@ const {
   updateProfile,
   verifyOtpEmail,
   oauthRegister,
-  guruCheckout,
   resendOtp,
- kingsSendOtp,
-kingsVerifyOtp,
-kingsRegister,
+  kingsSendOtp,
+  kingsVerifyOtp,
+  kingsRegister,
   oauthCallback,
-  guruRegisterViaInvite,
-  createGuruInvite,
-  resendGuruInvite,
   promoterRegisterViaReferral,
   validateReferralToken,
   createPromoterReferralInvite,
@@ -48,14 +44,13 @@ router.post('/otp/resend', resendOtp)
 router.post("/oauth/register", oauthRegister);
 router.post("/oauth/callback", oauthCallback);
 
-router.post("/guru/register", guruRegisterViaInvite);
-
+// Promoter invited by the King: validate token, then register (no approval needed)
 router.get("/referrals/validate/:token", validateReferralToken);
 router.post("/promoter/register", promoterRegisterViaReferral);
 
-router.post("/gurus/promoter/referral-invites", requireAuth, createPromoterReferralInvite);
-
-router.post("/promoter/referral-invites/resend", resendPromoterReferralInvite);
+// King invites a promoter (King's Account / founder / admin only, enforced in the controller)
+router.post("/promoters/invites", requireAuth, createPromoterReferralInvite);
+router.post("/promoters/invites/resend", resendPromoterReferralInvite);
 
 router.get("/me", requireAuth, getMe);
 router.post("/me/active-role", requireAuth, setActiveRole);
@@ -64,14 +59,8 @@ router.post("/logout-all", requireAuth, logoutAll);
 router.post("/setup", requireAuth, setupAccount);
 router.patch("/me", requireAuth, updateProfile);
 
-router.post("/gurus/invites", requireAuth, createGuruInvite);
-
-router.post("/guru/invites/resend", resendGuruInvite);
-
 router.post("/king/register", kingsRegister);
 router.post("/king/otp/send", kingsSendOtp);
 router.post("/king/otp/verify", kingsVerifyOtp);
-
-router.post("/guru/checkout", requireAuth, guruCheckout);
 
 module.exports = router;

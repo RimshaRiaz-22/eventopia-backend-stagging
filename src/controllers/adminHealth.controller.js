@@ -107,7 +107,7 @@ async function getJobRunsHandler(req, res) {
  * - date_to: Filter to date (ISO string)
  * - actor: Filter by actor user ID
  * - action_type: Filter by action type
- * - table: Filter by table ('ticket_audit_logs', 'event_audit_logs', 'admin_guru_actions')
+ * - table: Filter by table ('ticket_audit_logs', 'event_audit_logs', 'admin_promoter_actions', 'admin_guru_actions' (historic))
  * - page: Page number (default: 1)
  * - page_size: Page size (default: 100, max: 500)
  */
@@ -227,7 +227,42 @@ async function getAuditLogs(req, res) {
       allLogs.push(...eventResult.rows);
     }
 
-    // Query admin_guru_actions
+    // Query admin_promoter_actions
+    if (table === 'all' || table === 'admin_promoter_actions') {
+      const { whereClause, params } = buildWhereClause({
+        date_from,
+        date_to,
+        actor,
+        action_type,
+        column_prefix: 'aga.',
+        actor_column: 'aga.admin_id',
+        action_column: 'aga.action_type'
+      });
+
+      const promoterQuery = `
+        SELECT
+          'admin_promoter_actions' as table_name,
+          aga.id,
+          aga.created_at,
+          aga.action_type as action,
+          aga.promoter_id as entity_id,
+          u.name as entity_title,
+          u2.name as actor_name,
+          aga.metadata
+        FROM admin_promoter_actions aga
+        LEFT JOIN users u ON u.id = aga.promoter_id
+        LEFT JOIN users u2 ON u2.id = aga.admin_id
+        ${whereClause}
+        ORDER BY aga.created_at DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      const promoterParams = [...params, sizeNum, offset];
+      const promoterResult = await pool.query(promoterQuery, promoterParams);
+      allLogs.push(...promoterResult.rows);
+    }
+
+    // Query admin_guru_actions (historic, from before the Guru role was removed)
     if (table === 'all' || table === 'admin_guru_actions') {
       const { whereClause, params } = buildWhereClause({
         date_from,
@@ -263,7 +298,7 @@ async function getAuditLogs(req, res) {
     }
 
     // If no queries were executed (e.g., invalid table name)
-    if (allLogs.length === 0 && table !== 'all' && table !== 'ticket_audit_logs' && table !== 'event_audit_logs' && table !== 'admin_guru_actions') {
+    if (allLogs.length === 0 && table !== 'all' && table !== 'ticket_audit_logs' && table !== 'event_audit_logs' && table !== 'admin_promoter_actions' && table !== 'admin_guru_actions') {
       return ok(res, req, {
         logs: [],
         pagination: {

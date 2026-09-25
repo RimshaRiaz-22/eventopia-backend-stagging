@@ -1,7 +1,6 @@
 const pool = require("../db");
 const { ok, fail } = require("../utils/standardResponse");
 const crypto = require("crypto");
-const CommissionService = require("../services/commission.service");
 const CharityPaymentService = require("../services/charityPayment.service");
 
 function verifyWebhookSignature(req, provider) {
@@ -165,15 +164,6 @@ async function handlePaymentSucceeded(data, client) {
   );
 
   console.log("Payment succeeded for order " + orderId);
-
-  // Calculate and record Guru commissions
-  try {
-    await CommissionService.processOrderCommission(orderId);
-    console.log("Commission calculated for order " + orderId);
-  } catch (err) {
-    console.error('Commission calculation failed:', err);
-    // Don't fail the webhook if commission calculation fails
-  }
 }
 
 async function handlePaymentFailed(data, client) {
