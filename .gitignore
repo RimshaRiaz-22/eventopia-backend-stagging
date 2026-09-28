@@ -3,6 +3,14 @@ node_modules/
 uploads/
 *.log
 .DS_Store
+# Never commit SSH keys
+test
+test.pub
+*.pem
+id_ed25519
+id_ed25519.pub
+id_rsa
+id_rsa.pub
 .vscode/
 .idea/
 .claude
