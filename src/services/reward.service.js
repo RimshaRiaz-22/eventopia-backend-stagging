@@ -3,14 +3,14 @@ const pool = require('../db');
 /**
  * Calculate rewards for an event completion
  * @param {number} eventId - Event ID
- * @returns {Promise<Object>} { ticketsSold, promoterId, guruId, promoterReward, guruReward }
+ * @returns {Promise<Object>} { ticketsSold, promoterId, promoterReward }
  */
 async function calculateRewardsForEvent(eventId) {
   const client = await pool.connect();
   try {
-    // Get event details including tickets sold and guru attribution
+    // Get event details including tickets sold
     const eventResult = await client.query(
-      'SELECT tickets_sold, guru_id, promoter_id FROM events WHERE id = $1',
+      'SELECT tickets_sold, promoter_id FROM events WHERE id = $1',
       [eventId]
     );
 
@@ -18,16 +18,14 @@ async function calculateRewardsForEvent(eventId) {
       throw new Error('Event not found');
     }
 
-    const { tickets_sold, guru_id, promoter_id } = eventResult.rows[0];
+    const { tickets_sold, promoter_id } = eventResult.rows[0];
 
     // Validate we have tickets sold
     if (!tickets_sold || tickets_sold === 0) {
       return {
         ticketsSold: 0,
         promoterId: promoter_id,
-        guruId: guru_id,
-        promoterReward: 0,
-        guruReward: 0
+        promoterReward: 0
       };
     }
 
@@ -43,33 +41,10 @@ async function calculateRewardsForEvent(eventId) {
 
     const promoterReward = tickets_sold * promoterRatePerTicket;
 
-    let guruReward = 0;
-
-    // Calculate guru reward if guru is linked
-    if (guru_id) {
-      // Get guru's current level
-      const guruLevelResult = await client.query(
-        `SELECT gl.rate_per_ticket
-         FROM guru_levels gl
-         WHERE gl.guru_id = $1
-         AND gl.effective_until IS NULL
-         ORDER BY gl.effective_from DESC
-         LIMIT 1`,
-        [guru_id]
-      );
-
-      if (guruLevelResult.rowCount > 0) {
-        const guruRatePerTicket = guruLevelResult.rows[0].rate_per_ticket;
-        guruReward = tickets_sold * guruRatePerTicket;
-      }
-    }
-
     return {
       ticketsSold: tickets_sold,
       promoterId: promoter_id,
-      guruId: guru_id,
-      promoterReward,
-      guruReward
+      promoterReward
     };
   } finally {
     client.release();
@@ -102,9 +77,7 @@ async function issueRewardsForEvent(eventId, adminId) {
       return {
         ticketsSold: 0,
         promoterId: null,
-        guruId: null,
         promoterReward: 0,
-        guruReward: 0,
         eventNotCompleted: true
       };
     }
@@ -143,17 +116,6 @@ async function issueRewardsForEvent(eventId, adminId) {
       );
     }
 
-    // Issue guru voucher (if reward > 0 and guru exists)
-    if (rewards.guruReward > 0 && rewards.guruId) {
-      await client.query(
-        `INSERT INTO reward_vouchers
-         (owner_type, owner_id, event_id, amount, expires_at, source)
-         VALUES ('guru', $1, $2, $3, $4, 'event_completion')
-         ON CONFLICT (event_id, owner_type, owner_id) DO NOTHING`,
-        [rewards.guruId, eventId, rewards.guruReward, expiresAt]
-      );
-    }
-
     // Log to audit
     await client.query(
       `INSERT INTO event_audit_logs
@@ -162,7 +124,6 @@ async function issueRewardsForEvent(eventId, adminId) {
       [eventId, rewards.promoterId, JSON.stringify({
         ticketsSold: rewards.ticketsSold,
         promoterReward: rewards.promoterReward,
-        guruReward: rewards.guruReward,
         issuedBy: adminId,
         expiryMonths: expiryMonths
       })]

@@ -1,0 +1,684 @@
+{
+  "info": {
+    "name": "Eventopia Event Module - Promoter, King & Buyer Web APIs",
+    "description": "Only the event-module APIs actually called by the web app (Promoter portal, King's portal, and Buyer portal): event CRUD, cover/gallery images, categories, tags, ticket types, publish/cancel, King's pending-approval review/cancel-approval flow, and the Buyer's browse/search events + order/ticket-purchase flow. Login separately and paste the resulting access token into promoter_token / king_token / buyer_token.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:4000" },
+    { "key": "promoter_token", "value": "" },
+    { "key": "king_token", "value": "" },
+    { "key": "buyer_token", "value": "" },
+    { "key": "eventId", "value": "" },
+    { "key": "ticketTypeId", "value": "" },
+    { "key": "categoryId", "value": "" },
+    { "key": "tagId", "value": "" },
+    { "key": "galleryImageId", "value": "" },
+    { "key": "shareToken", "value": "" },
+    { "key": "orderId", "value": "" },
+    { "key": "ticketItemId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Promoter - Events",
+      "item": [
+        {
+          "name": "Create Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Test Event 2\",\n  \"description\": \"Test the event 2 description\",\n  \"startAt\": \"2026-11-01T18:00:00.000Z\",\n  \"endAt\": \"2026-11-01T23:00:00.000Z\",\n  \"timezone\": \"Europe/London\",\n  \"format\": \"in_person\",\n  \"accessMode\": \"ticketed\",\n  \"visibilityMode\": \"public\",\n  \"city\": \"London\",\n  \"venueName\": \"The Grand Hall\",\n  \"venueAddress\": \"1 High Street, London\",\n  \"categoryId\": {{categoryId}},\n  \"tagIds\": [],\n  \"tagNames\": []\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events"]
+            }
+          }
+        },
+        {
+          "name": "List My Events (search + pagination)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events?page=1&pageSize=10&search=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "10" },
+                { "key": "search", "value": "" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Event Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Event",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Test Event 2 (updated)\",\n  \"description\": \"Updated description\",\n  \"startAt\": \"2026-11-02T18:00:00.000Z\",\n  \"endAt\": \"2026-11-02T23:00:00.000Z\",\n  \"timezone\": \"Europe/London\",\n  \"format\": \"in_person\",\n  \"accessMode\": \"ticketed\",\n  \"visibilityMode\": \"public\",\n  \"city\": \"Manchester\",\n  \"venueName\": \"The Grand Hall\",\n  \"venueAddress\": \"1 High Street, Manchester\",\n  \"categoryId\": {{categoryId}},\n  \"tagIds\": [],\n  \"tagNames\": []\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Event",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Publish Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/publish",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "publish"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/cancel",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "cancel"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Promoter - Event Images",
+      "item": [
+        {
+          "name": "Upload Cover Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/images?type=cover",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "images"],
+              "query": [{ "key": "type", "value": "cover" }]
+            }
+          }
+        },
+        {
+          "name": "Upload Gallery Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/images?type=gallery",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "images"],
+              "query": [{ "key": "type", "value": "gallery" }]
+            }
+          }
+        },
+        {
+          "name": "Delete Cover Image",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/cover",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "cover"]
+            }
+          }
+        },
+        {
+          "name": "Delete Gallery Image",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/gallery/{{galleryImageId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "gallery", "{{galleryImageId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Promoter - Ticket Types",
+      "item": [
+        {
+          "name": "List Ticket Types",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/ticket-types?page=1&pageSize=10",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "ticket-types"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Ticket Type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"General Admission\",\n  \"description\": \"Standard entry ticket\",\n  \"currency\": \"GBP\",\n  \"priceAmount\": 2000,\n  \"bookingFeeAmount\": 285,\n  \"capacityTotal\": 100,\n  \"perOrderLimit\": 4,\n  \"visibility\": \"public\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/ticket-types",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "ticket-types"]
+            }
+          }
+        },
+        {
+          "name": "Update Ticket Type",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"General Admission\",\n  \"description\": \"Standard entry ticket\",\n  \"currency\": \"GBP\",\n  \"priceAmount\": 2500,\n  \"bookingFeeAmount\": 285,\n  \"capacityTotal\": 120,\n  \"perOrderLimit\": 4,\n  \"visibility\": \"public\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/ticket-types/{{ticketTypeId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "ticket-types", "{{ticketTypeId}}"]
+            }
+          }
+        },
+        {
+          "name": "Duplicate Ticket Type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/ticket-types/{{ticketTypeId}}/duplicate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "ticket-types", "{{ticketTypeId}}", "duplicate"]
+            }
+          }
+        },
+        {
+          "name": "Pause Ticket Type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/ticket-types/{{ticketTypeId}}/pause",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "ticket-types", "{{ticketTypeId}}", "pause"]
+            }
+          }
+        },
+        {
+          "name": "Resume Ticket Type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/ticket-types/{{ticketTypeId}}/resume",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "ticket-types", "{{ticketTypeId}}", "resume"]
+            }
+          }
+        },
+        {
+          "name": "Delete Ticket Type",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/ticket-types/{{ticketTypeId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "ticket-types", "{{ticketTypeId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Categories",
+      "item": [
+        {
+          "name": "List Categories",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/categories",
+              "host": ["{{base_url}}"],
+              "path": ["api", "categories"]
+            }
+          }
+        },
+        {
+          "name": "Create Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{promoter_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Music\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/categories",
+              "host": ["{{base_url}}"],
+              "path": ["api", "categories"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Tags",
+      "item": [
+        {
+          "name": "List Tags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/tags",
+              "host": ["{{base_url}}"],
+              "path": ["api", "tags"]
+            }
+          }
+        },
+        {
+          "name": "Search Tags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/tags?search=live",
+              "host": ["{{base_url}}"],
+              "path": ["api", "tags"],
+              "query": [{ "key": "search", "value": "live" }]
+            }
+          }
+        },
+        {
+          "name": "Create Tag",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Live Music\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/tags",
+              "host": ["{{base_url}}"],
+              "path": ["api", "tags"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. King - Events Oversight",
+      "item": [
+        {
+          "name": "List Pending Approval Events (filters)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{king_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/kings-account/events/pending-approval?page=1&pageSize=5&city=&startDate=&endDate=&status=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "kings-account", "events", "pending-approval"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "5" },
+                { "key": "city", "value": "" },
+                { "key": "startDate", "value": "" },
+                { "key": "endDate", "value": "" },
+                { "key": "status", "value": "" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Event Details (King)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{king_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/kings-account/events/{{eventId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "kings-account", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Draft Event (King)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{king_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/promoters/events/{{eventId}}/cancel",
+              "host": ["{{base_url}}"],
+              "path": ["api", "promoters", "events", "{{eventId}}", "cancel"]
+            }
+          }
+        },
+        {
+          "name": "Approve Cancellation Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{king_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/admin/kings-account/events/{{eventId}}/cancel/approve",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "kings-account", "events", "{{eventId}}", "cancel", "approve"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Buyer - Browse Events",
+      "item": [
+        {
+          "name": "List Events (search + filters)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/events?page=1&pageSize=5&search=&city=&categoryId=&tagIds=&dateFrom=&dateTo=&sort=soonest",
+              "host": ["{{base_url}}"],
+              "path": ["api", "events"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "5" },
+                { "key": "search", "value": "" },
+                { "key": "city", "value": "" },
+                { "key": "categoryId", "value": "" },
+                { "key": "tagIds", "value": "" },
+                { "key": "dateFrom", "value": "" },
+                { "key": "dateTo", "value": "" },
+                { "key": "sort", "value": "soonest" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Event Detail (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/events/{{eventId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Event by Share Token (private link)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/events/share/{{shareToken}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "events", "share", "{{shareToken}}"]
+            }
+          }
+        },
+        {
+          "name": "List Categories (filter dropdown)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/categories",
+              "host": ["{{base_url}}"],
+              "path": ["api", "categories"]
+            }
+          }
+        },
+        {
+          "name": "List Tags (filter dropdown)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/tags",
+              "host": ["{{base_url}}"],
+              "path": ["api", "tags"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Buyer - Orders & Tickets",
+      "item": [
+        {
+          "name": "Create Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"idempotency_key\": \"1234\",\n  \"items\": [\n    {\n      \"ticket_tier_id\": \"{{ticketTypeId}}\",\n      \"quantity\": 1,\n      \"attendees\": [\n        { \"name\": \"Alice\" }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/orders",
+              "host": ["{{base_url}}"],
+              "path": ["api", "orders"]
+            }
+          }
+        },
+        {
+          "name": "Confirm Order (payment success)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_ref\": \"stub_pi_abc123\",\n  \"payment_status\": \"success\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/orders/{{orderId}}/confirm",
+              "host": ["{{base_url}}"],
+              "path": ["api", "orders", "{{orderId}}", "confirm"]
+            }
+          }
+        },
+        {
+          "name": "List My Tickets",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/orders/buyer/tickets?status=active&page=1&limit=5",
+              "host": ["{{base_url}}"],
+              "path": ["api", "orders", "buyer", "tickets"],
+              "query": [
+                { "key": "status", "value": "active" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Cancelled-Event Tickets (refund centre)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/orders/buyer/tickets/cancelled-events",
+              "host": ["{{base_url}}"],
+              "path": ["api", "orders", "buyer", "tickets", "cancelled-events"]
+            }
+          }
+        },
+        {
+          "name": "Submit Refund Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/api/orders/buyer/refunds",
+              "host": ["{{base_url}}"],
+              "path": ["api", "orders", "buyer", "refunds"]
+            }
+          }
+        },
+        {
+          "name": "Get Ticket QR Code",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{buyer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/buyer/tickets/{{ticketItemId}}/qr",
+              "host": ["{{base_url}}"],
+              "path": ["api", "buyer", "tickets", "{{ticketItemId}}", "qr"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

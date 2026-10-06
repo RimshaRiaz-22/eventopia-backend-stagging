@@ -3,7 +3,6 @@ const { buildQR } = require("../utils/ticketQr.util");
 const { resolveTier } = require("./tierResolver.service");
 const { receiveTicketPayment } = require("./escrowReceive.service");
 const { allocateCredit } = require("./allocateCredit.service");
-const CommissionService = require("./commission.service");
 
 function generateTicketCode() {
   return "TKT-" + crypto.randomBytes(6).toString("hex").toUpperCase();
@@ -14,7 +13,7 @@ function generateTicketCode() {
  * Caller must hold a row lock on the order (e.g. FOR UPDATE) and an open transaction on `client`.
  *
  * @param {import("pg").PoolClient} client
- * @param {object} order — row from SELECT o.* ... JOIN events e (territory_id, promoter_id, guru_id, network_manager_id, event_id)
+ * @param {object} order — row from SELECT o.* ... JOIN events e (territory_id, promoter_id, event_id)
  * @param {number} orderId
  * @returns {Promise<{ alreadyConfirmed: boolean, order?: object, responseItems?: array, qtyByTierLabel?: object }>}
  */
@@ -146,7 +145,7 @@ async function fulfillLockedOrderPaymentSuccess(client, order, orderId) {
 }
 
 /**
- * Escrow, booking-fee ledger, tier credit allocation, guru commission (best-effort).
+ * Escrow, booking-fee ledger and tier credit allocation.
  */
 async function runPostFulfillmentSideEffects(order, orderId, qtyByTierLabel) {
   if (!qtyByTierLabel || !order) return;
@@ -172,8 +171,6 @@ async function runPostFulfillmentSideEffects(order, orderId, qtyByTierLabel) {
         tier_label: Number(tierLabel),
         quantity: qty,
         promoter_id: order.promoter_id,
-        guru_id: order.guru_id,
-        network_manager_id: order.network_manager_id,
         territory_id: order.territory_id || 1,
         order_id: orderId,
       });
@@ -181,12 +178,6 @@ async function runPostFulfillmentSideEffects(order, orderId, qtyByTierLabel) {
   } catch (err) {
     console.error("[orderFulfillment] allocateCredit:", err.message);
     throw err;
-  }
-
-  try {
-    await CommissionService.processOrderCommission(orderId);
-  } catch (err) {
-    console.error("[orderFulfillment] processOrderCommission:", err.message);
   }
 }
 

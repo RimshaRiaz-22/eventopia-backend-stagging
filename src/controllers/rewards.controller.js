@@ -17,11 +17,11 @@ const ensureRewardAccess = async (req) => {
 
   const role = result.rows[0]?.role;
 
-  if (!['promoter', 'guru'].includes(role)) {
+  if (role !== 'promoter') {
     throw {
       status: 403,
       code: 'REWARD_ACCESS_DENIED',
-      message: 'Only promoters and gurus can access reward shop'
+      message: 'Only promoters can access reward shop'
     };
   }
 
@@ -38,7 +38,7 @@ const getBalance = async (req, res) => {
     const userId = req.user.id;
     const balance = await getUserRewardBalance(userId);
 
-    return ok(res, req, balance, 200);
+    return ok(res, req, balance, "Reward balance retrieved successfully.");
 
   } catch (error) {
     return fail(
@@ -63,7 +63,7 @@ const createRedemption = async (req, res) => {
       request_note
     );
 
-    return ok(res, req, redemption, 201);
+    return ok(res, req, redemption, "Redemption requested successfully.", 201);
 
   } catch (error) {
     return fail(
@@ -83,7 +83,7 @@ const getRedemptions = async (req, res) => {
 
     const redemptions = await getUserRedemptions(userId);
 
-    return ok(res, req, redemptions, 200);
+    return ok(res, req, redemptions, "Redemptions retrieved successfully.");
 
   } catch (error) {
     console.error('Error fetching redemption requests:', error);
@@ -108,7 +108,7 @@ const approveRedemption = async (req, res) => {
 
     const redemption = await approveRedemptionRequest(id, adminId, admin_note);
 
-    return ok(res, req, redemption, 200);
+    return ok(res, req, redemption, "Redemption approved successfully.");
   } catch (error) {
     return fail(
       res,
@@ -131,7 +131,7 @@ const rejectRedemption = async (req, res) => {
 
     const redemption = await rejectRedemptionRequest(id, adminId, admin_note);
 
-    return ok(res, req, redemption, 200);
+    return ok(res, req, redemption, "Redemption rejected successfully.");
   } catch (error) {
     return fail(
       res,
@@ -154,7 +154,7 @@ const completeRedemption = async (req, res) => {
 
     const redemption = await completeRedemptionRequest(id, adminId, admin_note);
 
-    return ok(res, req, redemption, 200);
+    return ok(res, req, redemption, "Redemption marked as completed.");
   } catch (error) {
     return fail(
       res,

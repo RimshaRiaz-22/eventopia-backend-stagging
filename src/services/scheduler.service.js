@@ -3,10 +3,8 @@ const pool = require("../db");
 const { issueRewardsForEvent } = require('./reward.service');
 const { sendRewardNotificationEmails, sendVoucherExpiryReminderEmail } = require('./email.service');
 const { startJob, markJobSuccess, markJobFailed } = require('./jobMonitoring.service');
-const { expireHeldReservations } = require('./territoryReservation.service');
-const { runServiceFeeForMonth } = require('./serviceFeeJob.service');
-const { refreshAllGuruMetrics } = require('./guruMetrics.service');
 const { expireActivePromoterReferrals } = require("./promoterReferral.service");
+const { COMPLETABLE_STATUSES, completeEventInTransaction, issueRewardsAfterCompletion } = require("./eventCompletion.service");
 
 /**
  * Runs every hour to mark events as completed when they end
@@ -19,41 +17,31 @@ async function completePastEvents() {
 
     const result = await client.query(
       `SELECT id FROM events
-       WHERE status IN ('published', 'unpublished')
+       WHERE status::text = ANY($1::text[])
        AND completion_status = 'pending'
-       AND end_at < NOW()`
+       AND end_at < NOW()`,
+      [COMPLETABLE_STATUSES]
     );
 
-    if (result.rowCount > 0) {
-      const eventIds = result.rows.map(row => row.id);
-
-      // Update all completed events (also set settlement_status for My Gurus metrics)
-      await client.query(
-        `UPDATE events
-         SET completion_status = 'completed',
-             settlement_status = 'SETTLED',
-             completed_at = NOW(),
-             updated_at = NOW()
-         WHERE id = ANY($1::bigint[])`,
-        [eventIds]
-      );
-
-      console.log(`Completed ${eventIds.length} events automatically`);
-
-      // Issue rewards for each event (async, don't block)
-      for (const eventId of eventIds) {
-        try {
-          const rewards = await issueRewardsForEvent(eventId, null); // null = system
-          console.log(`Rewards issued for event ${eventId}`);
-
-          // Send reward notification emails
-          await sendRewardNotificationEmails(eventId, rewards)
-            .catch(err => console.error('Error sending reward emails:', err));
-        } catch (err) {
-          console.error(`Failed to issue rewards for event ${eventId}:`, err);
-        }
+    // Each event completes in its own transaction so one failure does not block the rest
+    let completedCount = 0;
+    for (const { id: eventId } of result.rows) {
+      try {
+        await client.query('BEGIN');
+        await completeEventInTransaction(client, eventId, { actorId: null, requireEnded: true });
+        await client.query('COMMIT');
+        completedCount++;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`Failed to complete event ${eventId}:`, err.message);
+        continue;
       }
+
+      const rewards = await issueRewardsAfterCompletion(eventId, null); // null = system
+      if (!rewards.error) console.log(`Rewards issued for event ${eventId}`);
     }
+
+    if (completedCount > 0) console.log(`Completed ${completedCount} events automatically`);
 
     await markJobSuccess(runId);
   } catch (err) {
@@ -117,26 +105,6 @@ async function expireReservations() {
     }
   } finally {
     client.release();
-  }
-}
-
-/**
- * Runs every minute to expire held territory reservations (Network Manager flow)
- */
-async function expireTerritoryReservations() {
-  let runId = null;
-  try {
-    runId = await startJob('expireTerritoryReservations');
-    const count = await expireHeldReservations();
-    if (count > 0) {
-      console.log(`Expired ${count} territory reservation(s)`);
-    }
-    await markJobSuccess(runId);
-  } catch (err) {
-    console.error("Error expiring territory reservations:", err);
-    if (runId) {
-      await markJobFailed(runId, err.message);
-    }
   }
 }
 
@@ -275,11 +243,6 @@ function initScheduler() {
     await expireReservations();
   });
 
-  // Run every minute - expire territory (Network Manager) reservations
-  cron.schedule("* * * * *", async () => {
-    await expireTerritoryReservations();
-  });
-
   // Run daily at midnight - expire vouchers
   cron.schedule("0 0 * * *", async () => {
     console.log("Running voucher expiry job...");
@@ -292,64 +255,18 @@ function initScheduler() {
     await sendVoucherExpiryReminders();
   });
 
-  // Run nightly at 2 AM - Guru metrics refresh (My Gurus dashboards)
-  cron.schedule("0 2 * * *", async () => {
-    let runId = null;
-    try {
-      runId = await startJob("refreshGuruMetrics");
-      console.log("Running guru metrics refresh job...");
-      await refreshAllGuruMetrics();
-      await markJobSuccess(runId);
-    } catch (err) {
-      console.error("Guru metrics refresh failed:", err);
-      if (runId) {
-        await markJobFailed(runId, err.message);
-      }
-    }
-  });
-
-  // Run 1st of each quarter (Jan, Apr, Jul, Oct) at 3 AM - Quarterly guru metrics snapshot for refund rate monitoring
-  cron.schedule("0 3 1 1,4,7,10 *", async () => {
-    let runId = null;
-    try {
-      const now = new Date();
-      const quarter = `Q${Math.floor(now.getMonth() / 3) + 1}-${now.getFullYear()}`;
-      runId = await startJob("refreshGuruMetricsQuarterly", { quarter });
-      console.log(`Running quarterly guru metrics snapshot (${quarter})...`);
-      await refreshAllGuruMetrics();
-      await markJobSuccess(runId);
-    } catch (err) {
-      console.error("Quarterly guru metrics snapshot failed:", err);
-      if (runId) {
-        await markJobFailed(runId, err.message);
-      }
-    }
-  });
-
-  // Run 1st of each month at 1 AM - Network Manager service fee (stub)
-  cron.schedule("0 1 1 * *", async () => {
-    const month = new Date().toISOString().slice(0, 7);
-    console.log(`Running service fee job for ${month}...`);
-    try {
-      await runServiceFeeForMonth(month);
-    } catch (err) {
-      console.error("Service fee job failed:", err);
-    }
-  });
-
   // Run daily at 1:30 AM - expire promoter referral windows
   cron.schedule("30 1 * * *", async () => {
     await expirePromoterReferralWindows();
   });
 
-  console.log("Event completion, reservation expiry, territory reservation expiry, voucher expiry, reminder, and service fee scheduler initialized");
+  console.log("Event completion, reservation expiry, voucher expiry, reminder, and referral window scheduler initialized");
 }
 
 module.exports = {
   initScheduler,
   completePastEvents,
   expireReservations,
-  expireTerritoryReservations,
   expireVouchers,
   sendVoucherExpiryReminders,
   expirePromoterReferralWindows,

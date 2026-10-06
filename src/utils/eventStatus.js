@@ -1,4 +1,4 @@
-const BUYER_VISIBLE_EVENT_STATUS = "active";
+const BUYER_VISIBLE_EVENT_STATUS = "published";
 
 function isBuyerVisibleEventStatus(status) {
   return status === BUYER_VISIBLE_EVENT_STATUS;

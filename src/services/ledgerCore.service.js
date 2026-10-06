@@ -29,14 +29,16 @@ function validateRequired(data) {
 
 /**
  * Create a single immutable ledger entry. Used internally by financial modules and by the export endpoint.
+ * @param {Object} [options.client] - pg client; when given, the insert joins the caller's transaction
  * @param {Object} data - Must include entry_type, user_id, role, territory_id, amount, status. Optional: level, network_id, rate_applied, gross_credit, net_credit, reference_id, reference_type, approval_actor_id, proof_reference
  * @returns {Promise<number>} The id of the new ledger entry
  * @throws {Error} LEDGER_MISSING_FIELD: <field> on validation; rethrows DB errors
  */
-async function createLedgerEntry(data) {
+async function createLedgerEntry(data, options = {}) {
   validateRequired(data);
 
-  const result = await pool.query(
+  const db = options.client || pool;
+  const result = await db.query(
     `INSERT INTO ledger_entries (
       entry_type, user_id, role, level, territory_id, network_id,
       amount, rate_applied, gross_credit, net_credit,

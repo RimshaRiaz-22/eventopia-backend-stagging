@@ -72,7 +72,7 @@ Central Express app configuration:
 Configuration modules/constants used by services and controllers.
 
 Examples:
-- `networkManagerTerritory.config.js`: territory/network manager rule settings.
+- `territory.config.js`: territory inventory status constants.
 
 ### `src/routes/`
 
@@ -81,7 +81,7 @@ Defines API endpoints and maps URL paths to controllers.
 Examples:
 - `auth.routes.js`: login/register/token/auth routes.
 - `events.routes.js`, `tickets.routes.js`, `orders.routes.js`: event ticketing flow.
-- `network-managers.routes.js`, `gurus.routes.js`, `promoters.routes.js`: role/business domain routes.
+- `promoters.routes.js`: role/business domain routes.
 - `escrow.routes.js`, `ledger.routes.js`, `wallet.routes.js`, `credit.routes.js`: financial routes.
 - `index.js`: consolidated route registry used by `/api`.
 - `v1.routes.js`: namespaced legacy/contract routes under `/api/v1`.
@@ -95,7 +95,7 @@ HTTP layer handlers:
 
 Controller naming usually matches route/domain:
 - `auth.controller.js`, `events.controller.js`, `orders.controller.js`, etc.
-- Feature-specific controllers include `stripeWebhooks.controller.js`, `network-managers-dashboard.controller.js`, `ticketAccess.controller.js`.
+- Feature-specific controllers include `stripeWebhooks.controller.js`, `ticketAccess.controller.js`.
 
 ### `src/services/`
 
@@ -105,7 +105,7 @@ Major service categories:
 - **Auth/session/security:** `session.service.js`, `accessToken.service.js`, `otp.service.js`, `access.service.js`
 - **Events/tickets/orders:** `orderFulfillment.service.js`, `orderStripePayment.service.js`, `settledTicket.service.js`, `qr.service.js`
 - **Finance/ledger/escrow:** `ledgerCore.service.js`, `platformLedger.service.js`, `escrow.service.js`, `escrowLiability.service.js`, `walletMe.service.js`
-- **Role ecosystems:** `guru.service.js`, `promoterReferral.service.js`, `networkManagerApplication.service.js`, `territoryLicence.service.js`
+- **Role ecosystems:** `promoterReferral.service.js`, `territoryLicenceInventory.service.js`
 - **Integrations:** `stripeClient.js`, `geonames.service.js`, `email.service.js`, `nodaPayment.service.js`
 - **Schedulers/jobs/monitoring:** `scheduler.service.js`, `serviceFeeJob.service.js`, `jobMonitoring.service.js`
 

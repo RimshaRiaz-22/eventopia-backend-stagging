@@ -104,9 +104,10 @@ async function createApplication(req, res) {
       agreed_to_terms,
       agreed_to_promoter_agreement,
       agreed_to_activation_fee_terms,
-      guru_user_id,
+      territory_name,
       avatar_url,
       full_name,
+      phone,
     } = req.body;
     const userId = req.user.id;
 
@@ -117,6 +118,25 @@ async function createApplication(req, res) {
         error: true,
         message: "You must agree to the terms, promoter agreement, and activation fee terms.",
         data: null,
+      });
+    }
+
+    // Phone is required and must be E.164 (e.g. +447911123456), same as invited promoters
+    const phoneValue = typeof phone === "string" ? phone.trim().replace(/\s+/g, "") : "";
+    if (!phoneValue) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: true,
+        message: "Phone number is required.",
+        data: null,
+      });
+    }
+    if (!/^\+[1-9]\d{1,14}$/.test(phoneValue)) {
+      await client.query("ROLLBACK");
+      return res.status(422).json({
+        error: true,
+        message: "Phone number must be in E.164 format (e.g., +447911123456).",
+        data: { phone },
       });
     }
 
@@ -154,114 +174,8 @@ async function createApplication(req, res) {
       });
     }
 
-    // Get user's referral attribution (from guru_referral_code during registration)
-    const attributionResult = await client.query(
-      `SELECT guru_id FROM user_attributions WHERE user_id = $1 AND guru_id IS NOT NULL`,
-      [userId]
-    );
-
-    let finalGuruId = guru_user_id;
-
-    // If user has referral attribution, use that guru and lock it
-    if (attributionResult.rowCount > 0) {
-      finalGuruId = attributionResult.rows[0].guru_id;
-      // Ensure guru_user_id from body matches the referred guru, or ignore body if referral exists
-      if (guru_user_id && String(guru_user_id) !== String(finalGuruId)) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: true,
-          message: "You were referred by a specific Guru. Your Guru selection cannot be changed.",
-          data: null,
-        });
-      }
-    } else {
-      // No referral - guru_user_id is required
-      if (!guru_user_id) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: true,
-          message: "Please select a Guru to proceed with your application.",
-          data: null,
-        });
-      }
-    }
-
-    // Verify the Guru exists and has active role
-    const guruResult = await client.query(
-      `SELECT id, name, role, account_status
-       FROM users
-       WHERE id = $1 AND role = 'guru'`,
-      [finalGuruId]
-    );
-
-    if (guruResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Invalid Guru selection. Please choose a valid Guru.",
-        data: null,
-      });
-    }
-
-    const guru = guruResult.rows[0];
-
-    if (guru.account_status !== 'active') {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "The selected Guru is not active. Please choose another Guru.",
-        data: null,
-      });
-    }
-
-    // Create Guru-Promoter link (just like Guru creates link with Network Manager)
-    // Only allow creating the link if user doesn't have one yet (first-time application)
-    const existingLink = await client.query(
-      `SELECT * FROM promoter_guru_links WHERE promoter_user_id = $1`,
-      [userId]
-    );
-
-    if (existingLink.rowCount > 0) {
-      const existingGuruId = existingLink.rows[0]?.guru_user_id;
-      if (String(existingGuruId) !== String(finalGuruId)) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: true,
-          message: "A Guru relationship already exists for your account. Please contact support to make changes.",
-          data: null,
-        });
-      }
-
-      // Referral flow may pre-create promoter_guru_links; keep it and normalize metadata.
-      await client.query(
-        `UPDATE promoter_guru_links
-         SET changed_at = NOW(),
-             source = COALESCE(source, 'application')
-         WHERE promoter_user_id = $1`,
-        [userId]
-      );
-    } else {
-      await client.query(
-        `
-        INSERT INTO promoter_guru_links (promoter_user_id, guru_user_id, source)
-        VALUES ($1, $2, 'application')
-        `,
-        [userId, finalGuruId]
-      );
-    }
-
-    // Get territory from Guru's Network Manager
-    const territoryResult = await client.query(
-      `SELECT gnm.territory_name
-       FROM guru_network_manager gnm
-       WHERE gnm.guru_user_id = $1`,
-      [finalGuruId]
-    );
-
-    let territoryName = null;
-    if (territoryResult.rowCount > 0) {
-      territoryName = territoryResult.rows[0].territory_name;
-    }
+    const territoryName =
+      typeof territory_name === "string" && territory_name.trim() ? territory_name.trim() : null;
 
     // Update user's profile fields captured during application
     if (full_name && String(full_name).trim()) {
@@ -276,16 +190,20 @@ async function createApplication(req, res) {
         [avatar_url, userId]
       );
     }
+    await client.query(
+      "UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2",
+      [phoneValue, userId]
+    );
 
     // Create promoter application
     const appResult = await client.query(
       `
       INSERT INTO promoter_applications
-        (user_id, guru_user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        (user_id, territory_name, avatar_url, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms, account_status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending')
       RETURNING *
       `,
-      [userId, finalGuruId, territoryName, avatar_url || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
+      [userId, territoryName, avatar_url || null, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms]
     );
 
     // Update user's account_status to pending_approval
@@ -325,7 +243,6 @@ async function createApplication(req, res) {
         application: {
           id: application.id,
           accountStatus: application.account_status,
-          guruId: finalGuruId,
           territoryName: territoryName,
           activationFee: 85,
           activationFeeInPence: 8500,
@@ -355,14 +272,11 @@ async function getMyApplication(req, res) {
   try {
     const userId = req.user.id;
 
-    // Get promoter application with Guru info
+    // Get promoter application
     const result = await pool.query(
-      `SELECT pa.*, u.email, u.name, u.account_status as user_account_status,
-              g.name as guru_name, gnm.territory_name as guru_territory
+      `SELECT pa.*, u.email, u.name, u.account_status as user_account_status
        FROM promoter_applications pa
        JOIN users u ON u.id = pa.user_id
-       LEFT JOIN users g ON g.id = pa.guru_user_id
-       LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pa.guru_user_id
        WHERE pa.user_id = $1`,
       [userId]
     );
@@ -389,11 +303,7 @@ async function getMyApplication(req, res) {
           createdAt: application.created_at,
           reviewedAt: application.reviewed_at,
           rejectionReason: application.rejection_reason,
-          guru: application.guru_user_id ? {
-            id: application.guru_user_id,
-            name: application.guru_name
-          } : null,
-          territoryName: application.guru_territory
+          territoryName: application.territory_name
         },
       },
     });
@@ -418,13 +328,9 @@ async function getMyProfile(req, res) {
     // Check if user has a promoter application or is an approved promoter
     const userResult = await pool.query(
       `SELECT u.*, pa.id as application_id, pa.account_status as application_status,
-              pgl.guru_user_id, gnm.territory_name,
-              g.id as guru_id, g.name as guru_name, g.email as guru_email
+              pa.territory_name
        FROM users u
        LEFT JOIN promoter_applications pa ON pa.user_id = u.id
-       LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-       LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
-       LEFT JOIN users g ON g.id = pgl.guru_user_id
        WHERE u.id = $1`,
       [userId]
     );
@@ -499,11 +405,6 @@ async function getMyProfile(req, res) {
           territory: {
             name: promoter.territory_name
           },
-          guru: promoter.guru_id ? {
-            id: promoter.guru_id,
-            name: promoter.guru_name,
-            email: promoter.guru_email
-          } : null,
           application: hasPendingApplication ? {
             id: promoter.application_id,
             status: promoter.application_status

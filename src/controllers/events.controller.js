@@ -3,6 +3,7 @@ const { ok, fail } = require("../utils/standardResponse");
 const { logEventChange } = require("../middlewares/audit.middleware");
 const { BUYER_VISIBLE_EVENT_STATUS } = require("../utils/eventStatus");
 const { ensureEscrowLiabilityForEvent, markPayoutEligibleForEvent } = require("../services/escrowLiability.service");
+const { completeEventInTransaction, issueRewardsAfterCompletion, CompletionError } = require("../services/eventCompletion.service");
 const crypto = require("crypto");
 
 /**
@@ -63,31 +64,6 @@ async function getEventsColumnSet(client) {
 }
 
 /**
- * Helper function to derive hierarchy attribution from promoter
- */
-async function deriveHierarchyFromPromoter(promoterId) {
-  const result = await pool.query(
-    `SELECT
-      pgl.guru_user_id as guru_id,
-      gnm.network_manager_user_id as network_manager_id,
-      gnm.territory_id,
-      t.name as territory_name
-    FROM users u
-    LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-    LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
-    LEFT JOIN territories t ON t.id = gnm.territory_id
-    WHERE u.id = $1 AND u.role = 'promoter'`,
-    [promoterId]
-  );
-
-  if (result.rowCount === 0) {
-    return { guru_id: null, network_manager_id: null, territory_id: null };
-  }
-
-  return result.rows[0];
-}
-
-/**
  * Phase E2: Create event
  * POST /promoter/events
  * Creates draft event with derived hierarchy attribution
@@ -121,15 +97,34 @@ async function createEvent(req, res) {
       tagNames,
     } = req.body;
 
-    // Validation
-    if (!title && !description && !city && !startAt && !endAt) {
-      return fail(res, req, 400, "VALIDATION_FAILED", "At least one field is required");
+    // Validation: the fields the Add Event form marks as required
+    const missing = [];
+    if (!title || !String(title).trim()) missing.push("title");
+    if (!startAt) missing.push("startAt");
+    if (!endAt) missing.push("endAt");
+    if (!city || !String(city).trim()) missing.push("city");
+    if (missing.length > 0) {
+      return fail(res, req, 400, "VALIDATION_FAILED", `Required: ${missing.join(", ")}`);
+    }
+    if (!["in_person", "online_live", "virtual_on_demand", "hybrid"].includes(format)) {
+      return fail(res, req, 400, "VALIDATION_FAILED", "format must be in_person, online_live, virtual_on_demand or hybrid");
+    }
+    if (!["ticketed", "guest_list", "mixed"].includes(accessMode)) {
+      return fail(res, req, 400, "VALIDATION_FAILED", "accessMode must be ticketed, guest_list or mixed");
+    }
+    if (!["public", "private_link"].includes(visibilityMode)) {
+      return fail(res, req, 400, "VALIDATION_FAILED", "visibilityMode must be public or private_link");
+    }
+    const startDate = new Date(startAt);
+    const endDate = new Date(endAt);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return fail(res, req, 400, "VALIDATION_FAILED", "startAt and endAt must be valid dates");
+    }
+    if (endDate < startDate) {
+      return fail(res, req, 400, "VALIDATION_FAILED", "endAt cannot be before startAt");
     }
 
     await client.query("BEGIN");
-
-    // Phase E2: Derive hierarchy attribution from promoter
-    const hierarchy = await deriveHierarchyFromPromoter(promoterId);
 
     // Generate share token if visibility mode is private_link
     let shareToken = null;
@@ -139,7 +134,7 @@ async function createEvent(req, res) {
 
     const eventColumns = await getEventsColumnSet(client);
     const insertColumns = [
-      "promoter_id", "guru_id", "network_manager_id", "territory_id",
+      "promoter_id",
       "title", "description", "start_at", "end_at", "timezone",
       "format", "access_mode", "visibility", "share_token",
       "venue_name", "venue_address", "lat", "lng",
@@ -147,9 +142,6 @@ async function createEvent(req, res) {
     ];
     const insertValues = [
       promoterId,
-      hierarchy.guru_id,
-      hierarchy.network_manager_id,
-      hierarchy.territory_id,
       title || null,
       description || null,
       startAt || null,
@@ -167,6 +159,16 @@ async function createEvent(req, res) {
       "draft",
       true
     ];
+
+    // Escrow is held per territory, so every event needs one: the promoter's territory, else the default (1).
+    if (eventColumns.has("territory_id")) {
+      const territoryResult = await client.query(
+        `SELECT territory_id FROM promoter_profiles WHERE user_id = $1 LIMIT 1`,
+        [promoterId]
+      );
+      insertColumns.push("territory_id");
+      insertValues.push(territoryResult.rows[0]?.territory_id || 1);
+    }
 
     if (eventColumns.has("city_display")) {
       insertColumns.push("city_display");
@@ -252,6 +254,10 @@ async function updateEvent(req, res) {
     if (event.status === 'cancelled' || event.status === 'cancellation_requested') {
       await client.query("ROLLBACK");
       return fail(res, req, 400, "INVALID_STATE", "Cancelled or cancellation-requested events cannot be edited");
+    }
+    if (event.status === 'completed') {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "INVALID_STATE", "Completed events cannot be edited");
     }
 
     // Build dynamic update
@@ -575,6 +581,11 @@ async function submitEvent(req, res) {
       return fail(res, req, 400, "INVALID_STATE", "Cancelled or cancellation-requested events cannot be submitted for approval");
     }
 
+    if (event.status === 'completed') {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "INVALID_STATE", "Completed events cannot be submitted for approval");
+    }
+
     const missingFields = await getEventSubmissionMissingFields(client, event, eventId);
 
     if (missingFields.length > 0) {
@@ -641,6 +652,11 @@ async function publishEvent(req, res) {
     if (event.status === 'cancelled' || event.status === 'cancellation_requested') {
       await client.query("ROLLBACK");
       return fail(res, req, 400, "INVALID_STATE", "Cancelled or cancellation-requested events cannot be published");
+    }
+
+    if (event.status === 'completed') {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "INVALID_STATE", "Completed events cannot be published");
     }
 
     // Phase E4: Publish validation (client-aligned)
@@ -756,24 +772,38 @@ async function cancelEvent(req, res) {
       await client.query("ROLLBACK");
       return fail(res, req, 409, "DUPLICATE_REQUEST", "Cancellation request already submitted and pending admin review");
     }
+    if (result.rows[0].status === 'completed') {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "INVALID_STATE", "Completed events cannot be cancelled");
+    }
+
+    // Events that were never published (draft / pending_approval) have never
+    // been visible to buyers, so they can be cancelled immediately without
+    // going through admin review.
+    const neverPublished = result.rows[0].status === 'draft' || result.rows[0].status === 'pending_approval';
+
+    const nextStatus = neverPublished ? 'cancelled' : 'cancellation_requested';
 
     await client.query(
       `UPDATE events
-       SET status = 'cancellation_requested',
-           cancel_reason = $1,
+       SET status = $1::event_status_enum,
+           cancel_reason = $2,
+           cancelled_at = CASE WHEN $1::event_status_enum = 'cancelled' THEN NOW() ELSE cancelled_at END,
            updated_at = NOW()
-       WHERE id = $2`,
-      [reason || null, eventId]
+       WHERE id = $3`,
+      [nextStatus, reason || null, eventId]
     );
 
     await client.query("COMMIT");
-    await logEventChange(req, 'cancellation_requested', eventId, { cancelReason: reason });
+    await logEventChange(req, neverPublished ? 'cancelled' : 'cancellation_requested', eventId, { cancelReason: reason });
 
-    return ok(res, req, {
-      id: parseInt(eventId, 10),
-      status: 'cancellation_requested',
-      message: 'Cancellation request submitted. Awaiting admin approval.'
-    });
+    return ok(res, req, neverPublished
+      ? { id: parseInt(eventId, 10), status: 'cancelled', message: 'Event cancelled.' }
+      : {
+          id: parseInt(eventId, 10),
+          status: 'cancellation_requested',
+          message: 'Cancellation request submitted. Awaiting admin approval.'
+        });
   } catch (err) {
     await client.query("ROLLBACK");
     return fail(res, req, 500, "INTERNAL_ERROR", err.message);
@@ -1453,12 +1483,7 @@ async function completeEvent(req, res) {
     const eventId = validateEventId(req.params.eventId);
     await client.query("BEGIN");
 
-    const { unauthorized, result } = await getEventForStatusAction(
-      client,
-      eventId,
-      req.user,
-      "status, end_at"
-    );
+    const { unauthorized, result } = await getEventForStatusAction(client, eventId, req.user, "status");
 
     if (unauthorized) {
       await client.query("ROLLBACK");
@@ -1470,30 +1495,28 @@ async function completeEvent(req, res) {
       return fail(res, req, 404, "NOT_FOUND", "Event not found");
     }
 
-    const event = result.rows[0];
-
-    if (event.status === 'cancelled' || event.status === 'cancellation_requested') {
-      await client.query("ROLLBACK");
-      return fail(res, req, 400, "INVALID_STATE", "Cancelled or cancellation-requested events cannot be completed");
-    }
-
-    await client.query(
-      `UPDATE events SET completion_status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`,
-      [eventId]
-    );
-
-    try {
-      await markPayoutEligibleForEvent(eventId, { client });
-    } catch (liabilityErr) {
-      console.warn("[completeEvent] payout-eligible sync skipped:", liabilityErr.message);
-    }
+    // A promoter can complete only after the event has ended; the King can complete early.
+    const isKing = req.user.role === "kings_account";
+    const completed = await completeEventInTransaction(client, eventId, {
+      actorId: req.user.id,
+      requireEnded: !isKing,
+    });
 
     await client.query("COMMIT");
     await logEventChange(req, 'completed', eventId);
 
-    return ok(res, req, { id: parseInt(eventId, 10), completionStatus: 'completed', completedAt: new Date().toISOString() });
+    const rewards = await issueRewardsAfterCompletion(eventId, req.user.id);
+
+    return ok(res, req, {
+      id: completed.id,
+      status: 'completed',
+      completionStatus: 'completed',
+      completedAt: completed.completedAt,
+      rewards,
+    });
   } catch (err) {
     await client.query("ROLLBACK");
+    if (err instanceof CompletionError) return fail(res, req, err.status, err.code, err.message);
     return fail(res, req, 500, "INTERNAL_ERROR", err.message);
   } finally {
     client.release();

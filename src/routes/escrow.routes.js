@@ -26,4 +26,18 @@ router.get( '/interest/:territory_id', requireAuth, requireRole('finance', 'king
   escrowController.getInterestHistory.bind(escrowController)
 );
 
+router.get(
+  '/payouts',
+  requireAuth,
+  requireRole('finance', 'kings_account'),
+  escrowController.listPayouts.bind(escrowController)
+);
+
+router.post(
+  '/payouts/:liability_id/approve',
+  requireAuth,
+  requireRole('finance', 'kings_account'),
+  escrowController.approvePayout.bind(escrowController)
+);
+
 module.exports = router;

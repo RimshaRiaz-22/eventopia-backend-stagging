@@ -1,8 +1,6 @@
 const pool = require("../db");
 const { revokeAllUserSessions } = require("../services/session.service");
 const { ok, fail } = require("../utils/standardResponse");
-const GuruService = require("../services/guru.service");
-const ReferralService = require("../services/referral.service");
 const { logEventChange, logCharityChange, logAdminAudit } = require("../middlewares/audit.middleware");
 const { issueRewardsForEvent } = require("../services/reward.service");
 const { sendRewardNotificationEmails } = require("../services/email.service");
@@ -11,402 +9,17 @@ const CharityPaymentService = require("../services/charityPayment.service");
 const CharityLedgerService = require("../services/charityLedger.service");
 const CharityNotificationService = require("../services/charityNotification.service");
 const PlatformLedgerService = require("../services/platformLedger.service");
-const TerritoryApplicationService = require("../services/territoryApplication.service");
-const TerritoryLicenceService = require("../services/territoryLicence.service");
 const TerritoryLicenceInventoryService = require("../services/territoryLicenceInventory.service");
+const { TERRITORY_STATUS } = require("../config/territory.config");
 const { ensurePromoterCreditWallet } = require("../services/promoterCreditWallet.service");
+const { ensurePromoterProfile } = require("../services/escrowLiability.service");
+const { completeEventInTransaction, issueRewardsAfterCompletion, CompletionError } = require("../services/eventCompletion.service");
 const { ensureEscrowLiabilityForEvent } = require("../services/escrowLiability.service");
+const { getEscrowColumns, adjustEscrowPence } = require("../services/escrowAccount.util");
 const {
   getReferralPoolAdminView,
   approveReferralPayout,
 } = require("../services/promoterReferral.service");
-
-/**
- * Approve Guru application
- * POST /admin/gurus/:applicationId/approve
- */
-async function approveGuruApplication(req, res) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const { applicationId } = req.params;
-    const adminId = req.user.id;
-
-    // Get the application
-    const appResult = await client.query(
-      `
-      SELECT ga.*, u.id as user_id, u.email, u.name
-      FROM guru_applications ga
-      JOIN users u ON u.id = ga.user_id
-      WHERE ga.id = $1
-      `,
-      [applicationId]
-    );
-
-    if (appResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: true,
-        message: "Application not found.",
-        data: null,
-      });
-    }
-
-    const application = appResult.rows[0];
-
-    // Check if already approved
-    if (application.account_status === "approved") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Application is already approved.",
-        data: null,
-      });
-    }
-
-    // Activation fee gate: must have committed upfront or negative_balance
-    const validActivationStatuses = ["committed_upfront", "committed_negative_balance"];
-    if (!application.activation_fee_status || !validActivationStatuses.includes(application.activation_fee_status)) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Activation fee must be committed before approval. Applicant must choose upfront payment or negative balance.",
-        data: null,
-      });
-    }
-
-    // Get Network Manager details
-    const nmResult = await client.query(
-      `
-      SELECT u.id, u.name, u.city
-      FROM users u
-      WHERE u.id = $1 AND u.role = 'network_manager'
-      `,
-      [application.network_manager_user_id]
-    );
-
-    if (nmResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Invalid Network Manager.",
-        data: null,
-      });
-    }
-
-    const networkManager = nmResult.rows[0];
-
-    // Update application status
-    await client.query(
-      `
-      UPDATE guru_applications
-      SET account_status = 'approved',
-          reviewed_by = $1,
-          reviewed_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $2
-      `,
-      [adminId, applicationId]
-    );
-
-    // Wallet initialization: upfront = 0, negative_balance = -25000
-    const walletBalance = application.activation_fee_status === "committed_upfront" ? 0 : -25000;
-    await client.query(
-      `INSERT INTO wallets (user_id, balance_amount, currency)
-       VALUES ($1, $2, 'GBP')
-       ON CONFLICT (user_id) DO UPDATE SET balance_amount = $2, updated_at = NOW()`,
-      [application.user_id, walletBalance]
-    );
-
-    // Payment record for negative_balance path
-    if (application.activation_fee_status === "committed_negative_balance") {
-      await client.query(
-        `INSERT INTO payment_transactions
-         (user_id, entity_type, entity_id, amount, currency, direction, status, payment_method)
-         VALUES ($1, 'guru_activation_fee', $2, 25000, 'GBP', 'debit', 'completed', 'negative_balance')`,
-        [application.user_id, application.id]
-      );
-    }
-
-    // Update user: signup_fee_paid only for upfront
-    const signupFeePaid = application.activation_fee_status === "committed_upfront";
-    const userResult = await client.query(
-      `
-      UPDATE users
-      SET account_status = 'active',
-          role = 'guru',
-          guru_active = TRUE,
-          guru_active_until = NOW() + INTERVAL '1 year',
-          guru_activation_date = NOW(),
-          signup_fee_paid = $2,
-          roles_version = roles_version + 1,
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING roles_version
-      `,
-      [application.user_id, signupFeePaid]
-    );
-
-    const newRolesVersion = userResult.rows[0].roles_version;
-
-    // Ensure guru profile exists with licence debt baseline for self-registration path.
-    const guruProfileExists = await client.query(
-      `SELECT user_id FROM guru_profiles WHERE user_id = $1 LIMIT 1`,
-      [application.user_id]
-    );
-    if (guruProfileExists.rowCount === 0) {
-      await client.query(
-        `INSERT INTO guru_profiles (user_id, level, licence_balance, created_at)
-         VALUES ($1, 1, -295, NOW())`,
-        [application.user_id]
-      );
-    }
-
-    // Set guru level L1 with service_fee_rate 20%
-    const levelResult = await client.query(
-      `SELECT rate_per_ticket, service_fee_rate FROM guru_commission_rates WHERE level = 1`
-    );
-    const ratePerTicket = levelResult.rowCount > 0 ? levelResult.rows[0].rate_per_ticket : 20;
-    const serviceFeeRate = levelResult.rowCount > 0 ? levelResult.rows[0].service_fee_rate : 0.2;
-    await client.query(
-      `INSERT INTO guru_levels (guru_id, level, rate_per_ticket, service_fee_rate, created_by, reason)
-       VALUES ($1, 1, $2, $3, $4, 'Default level on approval')`,
-      [application.user_id, ratePerTicket, serviceFeeRate, adminId]
-    );
-
-    // Create or update guru_network_manager link
-    await client.query(
-      `
-      INSERT INTO guru_network_manager (guru_user_id, network_manager_user_id, territory_name, assigned_at)
-      VALUES ($1, $2, $3, NOW())
-      ON CONFLICT (guru_user_id)
-      DO UPDATE SET
-        network_manager_user_id = $2,
-        territory_name = $3,
-        assigned_at = NOW()
-      `,
-      [application.user_id, application.network_manager_user_id, application.territory_name]
-    );
-
-    await client.query("COMMIT");
-
-    // Generate referral code (non-blocking)
-    try {
-      await ReferralService.createReferralCode(application.user_id);
-    } catch (err) {
-      // Referral code might already exist, continue
-    }
-
-    // Revoke all existing sessions for the user so they need to refresh
-    // This forces them to get new token with updated roles
-    try {
-      await revokeAllUserSessions(application.user_id, "role_assigned");
-    } catch (sessionError) {
-      // Log but don't fail - session revocation is not critical
-      console.error("Error revoking sessions:", sessionError);
-    }
-
-    return res.json({
-      error: false,
-      message: "Guru application approved successfully.",
-      data: {
-        application: {
-          id: applicationId,
-          accountStatus: "approved",
-          reviewedBy: adminId,
-          reviewedAt: new Date(),
-        },
-        user: {
-          userId: application.user_id,
-          email: application.email,
-          name: application.name,
-          role: "guru",
-          accountStatus: "active",
-          rolesVersion: newRolesVersion
-        },
-        networkManager: {
-          id: networkManager.id,
-          name: networkManager.name,
-          territory: application.territory_name,
-        }
-      },
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Approve Guru application error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "Unable to approve Guru application at the moment. Please try again later.",
-      data: null,
-    });
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * Approve Network Manager application
- * POST /admin/network-managers/:applicationId/approve
- */
-async function approveNetworkManagerApplication(req, res) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const { applicationId } = req.params;
-    const adminId = req.user.id;
-
-    // Get the application
-    const appResult = await client.query(
-      `
-      SELECT nma.*, u.id as user_id, u.email
-      FROM network_manager_applications nma
-      JOIN users u ON u.id = nma.user_id
-      WHERE nma.id = $1
-      `,
-      [applicationId]
-    );
-
-    if (appResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({
-        error: true,
-        message: "Application not found.",
-        data: null,
-      });
-    }
-
-    const application = appResult.rows[0];
-
-    // Check if already approved
-    if (application.account_status === "approved") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: true,
-        message: "Application is already approved.",
-        data: null,
-      });
-    }
-
-    // Update application status
-    await client.query(
-      `
-      UPDATE network_manager_applications
-      SET account_status = 'approved',
-          reviewed_by = $1,
-          reviewed_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $2
-      `,
-      [adminId, applicationId]
-    );
-
-    // Update user account_status to active
-    await client.query(
-      `
-      UPDATE users
-      SET account_status = 'active',
-          updated_at = NOW()
-      WHERE id = $1
-      `,
-      [application.user_id]
-    );
-
-    // Assign Network Manager role (single-role system)
-    const userResult = await client.query(
-      `
-      UPDATE users
-      SET role = 'network_manager',
-          roles_version = roles_version + 1,
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING roles_version
-      `,
-      [application.user_id]
-    );
-
-    const newRolesVersion = userResult.rows[0].roles_version;
-
-    await client.query("COMMIT");
-
-    // Revoke all existing sessions for the user so they need to refresh
-    // This forces them to get new token with updated roles
-    try {
-      await revokeAllUserSessions(application.user_id, "role_assigned");
-    } catch (sessionError) {
-      // Log but don't fail - session revocation is not critical
-      console.error("Error revoking sessions:", sessionError);
-    }
-
-    return res.json({
-      error: false,
-      message: "Network Manager application approved successfully.",
-      data: {
-        application: {
-          id: application.id,
-          userId: application.user_id,
-          territoryName: application.territory_name,
-          accountStatus: "approved",
-          reviewedAt: new Date(),
-        },
-        user: {
-          userId: application.user_id,
-          email: application.email,
-          accountStatus: "active",
-          rolesVersion: newRolesVersion,
-        },
-      },
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Approve Network Manager application error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "Unable to approve application at the moment. Please try again later.",
-      data: null,
-    });
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * Reject Network Manager application
- * POST /admin/network-managers/:applicationId/reject
- */
-async function rejectNetworkManagerApplication(req, res) {
-  try {
-    const { applicationId } = req.params;
-    const { rejection_reason } = req.body || {};
-    const appResult = await pool.query(
-      "SELECT id, user_id FROM network_manager_applications WHERE id = $1",
-      [applicationId]
-    );
-    if (appResult.rowCount === 0) {
-      return res.status(404).json({ error: true, message: "Application not found.", data: null });
-    }
-    const app = appResult.rows[0];
-    await pool.query(
-      `UPDATE network_manager_applications
-       SET account_status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), rejection_reason = $2, updated_at = NOW()
-       WHERE id = $3`,
-      [req.user.id, rejection_reason || null, applicationId]
-    );
-    return res.json({
-      error: false,
-      message: "Network Manager application rejected.",
-      data: { applicationId: app.id, userId: app.user_id },
-    });
-  } catch (err) {
-    console.error("Reject Network Manager application error:", err);
-    return res.status(500).json({
-      error: true,
-      message: "Unable to reject application.",
-      data: null,
-    });
-  }
-}
 
 /**
  * Approve Promoter application
@@ -423,12 +36,9 @@ async function approvePromoterApplication(req, res) {
     // Get the application
     const appResult = await client.query(
       `
-      SELECT pa.*, u.id as user_id, u.email, u.name, u.avatar_url,
-             pgl.guru_user_id, gnm.territory_name
+      SELECT pa.*, u.id as user_id, u.email, u.name, u.avatar_url
       FROM promoter_applications pa
       JOIN users u ON u.id = pa.user_id
-      LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-      LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
       WHERE pa.id = $1
       `,
       [applicationId]
@@ -501,6 +111,7 @@ async function approvePromoterApplication(req, res) {
     }
 
     await ensurePromoterCreditWallet(client, application.user_id);
+    await ensurePromoterProfile(client, application.user_id);
 
     // Update invoice status if exists
     await client.query(
@@ -541,9 +152,6 @@ async function approvePromoterApplication(req, res) {
           accountStatus: "active",
           rolesVersion: newRolesVersion,
         },
-        guru: application.guru_user_id ? {
-          id: application.guru_user_id,
-        } : null,
         territory: application.territory_name ? {
           name: application.territory_name,
         } : null
@@ -643,350 +251,6 @@ async function getEventMetrics(req, res) {
 }
 
 /**
- * Create Guru invite
- * POST /admin/gurus/create-invite
- */
-async function createGuruInvite(req, res) {
-  try {
-    const { email, name, role, network_manager_user_id } = req.body;
-    const adminId = req.user.id;
-
-    if (!email || !name) {
-      return fail(res, req, 400, "VALIDATION_ERROR", "Email and name are required");
-    }
-
-    // Default to guru role if not specified
-    const inviteRole = role || 'guru';
-
-    // Validate role
-    const allowedRoles = ['guru', 'promoter', 'network_manager'];
-    if (!allowedRoles.includes(inviteRole)) {
-      return fail(res, req, 400, "VALIDATION_ERROR", "Invalid role. Allowed roles: guru, promoter, network_manager");
-    }
-
-    // Generate invite token
-    const inviteToken = require('crypto').randomBytes(32).toString('hex');
-
-    // Create invite in guru_invites table
-    const result = await pool.query(
-      `INSERT INTO guru_invites
-        (email, name, role, invite_token, network_manager_user_id, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       RETURNING *`,
-      [email, name, inviteRole, inviteToken, network_manager_user_id || null, adminId]
-    );
-
-    const inviteLink = `${process.env.FRONTEND_URL}/register?invite=${inviteToken}`;
-
-    return ok(res, req, {
-      inviteId: result.rows[0].id,
-      inviteLink: inviteLink,
-      inviteToken: inviteToken,
-      email: email,
-      name: name,
-      role: inviteRole,
-      status: 'invited',
-      expiresAt: result.rows[0].expires_at
-    });
-  } catch (err) {
-    console.error('Create Guru invite error:', err);
-    return fail(res, req, 500, "INTERNAL_ERROR", "Failed to create invite");
-  }
-}
-
-/**
- * List all Gurus
- * GET /admin/gurus
- */
-async function listGurus(req, res) {
-  try {
-    const { page = "1", pageSize = "50" } = req.query;
-
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const pageSizeNum = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 50));
-    const offset = (pageNum - 1) * pageSizeNum;
-
-    // Get total count
-    const countResult = await pool.query(
-      "SELECT COUNT(*) as total FROM users WHERE role = 'guru'"
-    );
-    const total = parseInt(countResult.rows[0].total, 10);
-
-    // Get Gurus with their level and activation status
-    const result = await pool.query(
-      `SELECT
-         u.id,
-         u.email,
-         u.name,
-         u.guru_active,
-         u.guru_active_until,
-         u.guru_activation_date,
-         u.created_at,
-         gl.level,
-         gl.rate_per_ticket,
-         COUNT(DISTINCT pgl.promoter_user_id) as promoters_count
-       FROM users u
-       LEFT JOIN guru_levels gl ON gl.guru_id = u.id AND gl.effective_until IS NULL
-       LEFT JOIN promoter_guru_links pgl ON pgl.guru_user_id = u.id
-       WHERE u.role = 'guru'
-       GROUP BY u.id, u.email, u.name, u.guru_active, u.guru_active_until, u.guru_activation_date, u.created_at, gl.level, gl.rate_per_ticket
-       ORDER BY u.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [pageSizeNum, offset]
-    );
-
-    return ok(res, req, {
-      gurus: result.rows,
-      pagination: { page: pageNum, pageSize: pageSizeNum, total }
-    });
-  } catch (err) {
-    console.error('List Gurus error:', err);
-    return fail(res, req, 500, "INTERNAL_ERROR", "Failed to list Gurus");
-  }
-}
-
-/**
- * Get Guru details
- * GET /admin/gurus/:guruId
- */
-async function getGuruDetails(req, res) {
-  try {
-    const { guruId } = req.params;
-
-    // Get Guru basic info
-    const guruResult = await pool.query(
-      `SELECT
-         u.id,
-         u.email,
-         u.name,
-         u.guru_active,
-         u.guru_active_until,
-         u.guru_activation_date,
-         u.created_at,
-         gl.level,
-         gl.rate_per_ticket,
-         gl.effective_from as level_effective_from
-       FROM users u
-       LEFT JOIN guru_levels gl ON gl.guru_id = u.id AND gl.effective_until IS NULL
-       WHERE u.id = $1 AND u.role = 'guru'`,
-      [guruId]
-    );
-
-    if (guruResult.rowCount === 0) {
-      return fail(res, req, 404, "NOT_FOUND", "Guru not found");
-    }
-
-    // Get attached promoters
-    const promotersResult = await pool.query(
-      `SELECT
-         pgl.promoter_user_id,
-         u.name,
-         u.email,
-         pgl.created_at as attached_at,
-         pgl.source
-       FROM promoter_guru_links pgl
-       JOIN users u ON u.id = pgl.promoter_user_id
-       WHERE pgl.guru_user_id = $1
-       ORDER BY pgl.created_at DESC`,
-      [guruId]
-    );
-
-    // Get recent commissions
-    const commissionsResult = await pool.query(
-      `SELECT
-         gc.*,
-         u.name as promoter_name,
-         e.title as event_title
-       FROM guru_commissions gc
-       JOIN users u ON u.id = gc.promoter_id
-       LEFT JOIN events e ON e.id = gc.event_id
-       WHERE gc.guru_id = $1
-       ORDER BY gc.created_at DESC
-       LIMIT 20`,
-      [guruId]
-    );
-
-    return ok(res, req, {
-      guru: guruResult.rows[0],
-      promoters: promotersResult.rows,
-      recentCommissions: commissionsResult.rows
-    });
-  } catch (err) {
-    console.error('Get Guru details error:', err);
-    return fail(res, req, 500, "INTERNAL_ERROR", "Failed to get Guru details");
-  }
-}
-
-/**
- * Manually activate Guru
- * POST /admin/gurus/:guruId/activate
- */
-async function activateGuru(req, res) {
-  const { guruId } = req.params;
-  const client = await pool.connect();
-
-  try {
-    await client.query('BEGIN');
-
-    // Check if Guru exists
-    const userResult = await client.query(
-      'SELECT * FROM users WHERE id = $1 AND role = $2',
-      [guruId, 'guru']
-    );
-
-    if (userResult.rowCount === 0) {
-      await client.query('ROLLBACK');
-      return fail(res, req, 404, "NOT_FOUND", "Guru not found");
-    }
-
-    // Activate Guru
-    await client.query(
-      `UPDATE users
-       SET guru_active = TRUE,
-           guru_active_until = NOW() + INTERVAL '1 year',
-           guru_activation_date = NOW(),
-           signup_fee_paid = TRUE,
-           roles_version = roles_version + 1
-       WHERE id = $1`,
-      [guruId]
-    );
-
-    // Record signup fee
-    await client.query(
-      `INSERT INTO signup_fees (user_id, role_type, amount, status, paid_at)
-       VALUES ($1, 'guru', 25000, 'paid', NOW())`,
-      [guruId]
-    );
-
-    // Create wallet if doesn't exist
-    await client.query(
-      `INSERT INTO wallets (user_id, balance_amount)
-       VALUES ($1, 0)
-       ON CONFLICT (user_id) DO NOTHING`,
-      [guruId]
-    );
-
-    // Generate referral code if doesn't exist
-    try {
-      await ReferralService.createReferralCode(parseInt(guruId, 10));
-    } catch (err) {
-      // Referral code might already exist, continue
-      console.warn('Referral code generation warning:', err.message);
-    }
-
-    // Set default level if none exists
-    const levelCheck = await client.query(
-      'SELECT id FROM guru_levels WHERE guru_id = $1 AND effective_until IS NULL',
-      [guruId]
-    );
-
-    if (levelCheck.rowCount === 0) {
-      await GuruService.setGuruLevel(parseInt(guruId, 10), 1, req.user.id, 'Manual activation');
-    }
-
-    // Log admin action
-    await client.query(
-      `INSERT INTO admin_guru_actions
-        (admin_id, guru_id, action_type, new_value, reason)
-       VALUES ($1, $2, 'manual_activation', 'Activated', 'Manual activation by admin')`,
-      [req.user.id, guruId]
-    );
-
-    await client.query('COMMIT');
-
-    return ok(res, req, {
-      message: "Guru activated successfully",
-      activationDate: new Date()
-    });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Activate Guru error:', err);
-    return fail(res, req, 500, "ACTIVATION_FAILED", "Failed to activate Guru");
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * Update Guru level
- * POST /admin/gurus/:guruId/level
- */
-async function updateGuruLevel(req, res) {
-  try {
-    const { guruId } = req.params;
-    const { level, reason } = req.body;
-
-    if (!level || level < 1 || level > 3) {
-      return fail(res, req, 400, "VALIDATION_ERROR", "Level must be between 1 and 3");
-    }
-
-    const result = await GuruService.setGuruLevel(
-      parseInt(guruId, 10),
-      level,
-      req.user.id,
-      reason || 'Level update by admin'
-    );
-
-    return ok(res, req, {
-      guruId: parseInt(guruId, 10),
-      level: result.level,
-      ratePerTicket: result.rate_per_ticket,
-      effectiveFrom: result.effective_from
-    });
-  } catch (err) {
-    console.error('Update Guru level error:', err);
-    return fail(res, req, 500, "UPDATE_FAILED", "Failed to update Guru level");
-  }
-}
-
-/**
- * Attach promoter to Guru
- * POST /admin/gurus/:guruId/promoters/:promoterId/attach
- */
-async function attachPromoterToGuru(req, res) {
-  try {
-    const { guruId, promoterId } = req.params;
-
-    const result = await GuruService.manuallyAttachPromoter(
-      parseInt(guruId, 10),
-      parseInt(promoterId, 10),
-      req.user.id
-    );
-
-    return ok(res, req, {
-      message: "Promoter attached to Guru successfully",
-      link: result
-    });
-  } catch (err) {
-    console.error('Attach promoter error:', err);
-    return fail(res, req, 500, "ATTACH_FAILED", err.message);
-  }
-}
-
-/**
- * Detach promoter from Guru
- * POST /admin/gurus/:guruId/promoters/:promoterId/detach
- */
-async function detachPromoterFromGuru(req, res) {
-  try {
-    const { guruId, promoterId } = req.params;
-
-    await GuruService.detachPromoter(
-      parseInt(guruId, 10),
-      parseInt(promoterId, 10),
-      req.user.id
-    );
-
-    return ok(res, req, {
-      message: "Promoter detached from Guru successfully"
-    });
-  } catch (err) {
-    console.error('Detach promoter error:', err);
-    return fail(res, req, 500, "DETACH_FAILED", err.message);
-  }
-}
-
-/**
  * Complete event manually and trigger reward issuance
  * POST /admin/events/:eventId/complete
  */
@@ -998,75 +262,25 @@ async function completeEvent(req, res) {
     const { eventId } = req.params;
     const adminId = req.user.id;
 
-    // Get event
-    const eventResult = await client.query(
-      'SELECT * FROM events WHERE id = $1',
-      [eventId]
-    );
-
-    if (eventResult.rowCount === 0) {
-      await client.query('ROLLBACK');
-      return fail(res, req, 404, "NOT_FOUND", "Event not found");
-    }
-
-    const event = eventResult.rows[0];
-
-    // Validate event can be completed
-    if (event.status === 'cancelled') {
-      await client.query('ROLLBACK');
-      return fail(res, req, 400, "INVALID_STATE", "Cancelled events cannot be completed");
-    }
-
-    if (event.completion_status === 'completed') {
-      await client.query('ROLLBACK');
-      return fail(res, req, 400, "ALREADY_COMPLETED", "Event already completed");
-    }
-
-    // Update event with completion info
-    await client.query(
-      `UPDATE events
-       SET completion_status = 'completed',
-           completed_at = NOW(),
-           completed_by = $1,
-           updated_at = NOW()
-       WHERE id = $2`,
-      [adminId, eventId]
-    );
+    // The King may complete an event before its end time
+    const completed = await completeEventInTransaction(client, eventId, { actorId: adminId, requireEnded: false });
 
     await client.query('COMMIT');
     await logEventChange(req, 'admin_completed', parseInt(eventId, 10));
 
-    // Issue rewards (separate transaction)
-    let rewardsInfo = null;
-    try {
-      const rewards = await issueRewardsForEvent(eventId, adminId);
-      rewardsInfo = {
-        promoterReward: rewards.promoterReward,
-        guruReward: rewards.guruReward,
-        ticketsSold: rewards.ticketsSold
-      };
-
-      // Send notifications (async, don't wait)
-      sendRewardNotificationEmails(eventId, rewards).catch(err =>
-        console.error('Error sending reward emails:', err)
-      );
-    } catch (rewardErr) {
-      // Event is completed, but rewards failed - don't fail the request
-      console.error('Failed to issue rewards:', rewardErr);
-      rewardsInfo = {
-        error: rewardErr.message
-      };
-    }
+    // Rewards are issued after the event is safely completed; a failure here does not undo the completion
+    const rewards = await issueRewardsAfterCompletion(eventId, adminId);
 
     return ok(res, req, {
-      id: parseInt(eventId, 10),
+      id: completed.id,
+      status: 'completed',
       completionStatus: 'completed',
-      completedAt: new Date().toISOString(),
-      completedBy: adminId,
-      rewardsIssued: rewardsInfo
+      completedAt: completed.completedAt,
+      rewards,
     });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query("ROLLBACK");
+    if (err instanceof CompletionError) return fail(res, req, err.status, err.code, err.message);
     return fail(res, req, 500, "INTERNAL_ERROR", err.message);
   } finally {
     client.release();
@@ -1213,146 +427,6 @@ async function approveCancellationRequest(req, res) {
     return fail(res, req, 500, "INTERNAL_ERROR", err.message);
   } finally {
     client.release();
-  }
-}
-
-/**
- * List all Promoters
- * GET /admin/promoters
- */
-async function listPromoters(req, res) {
-  try {
-    const { page = "1", pageSize = "50" } = req.query;
-
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const pageSizeNum = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 50));
-    const offset = (pageNum - 1) * pageSizeNum;
-
-    // Get total count
-    const countResult = await pool.query(
-      "SELECT COUNT(*) as total FROM users WHERE role = 'promoter'"
-    );
-    const total = parseInt(countResult.rows[0].total, 10);
-
-    // Get Promoters with their stats
-    const result = await pool.query(
-      `SELECT
-         u.id,
-         u.email,
-         u.name,
-         u.avatar_url,
-         u.account_status,
-         u.created_at,
-         COUNT(DISTINCT e.id) as events_count,
-         COALESCE(SUM(e.tickets_sold), 0) as total_tickets_sold,
-         COALESCE(SUM(CASE WHEN e.completion_status = 'completed' THEN 1 ELSE 0 END), 0) as completed_events_count,
-         pgl.guru_user_id
-       FROM users u
-       LEFT JOIN events e ON e.promoter_id = u.id
-       LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-       WHERE u.role = 'promoter'
-       GROUP BY u.id, u.email, u.name, u.avatar_url, u.account_status, u.created_at, pgl.guru_user_id
-       ORDER BY u.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [pageSizeNum, offset]
-    );
-
-    return ok(res, req, {
-      promoters: result.rows,
-      pagination: { page: pageNum, pageSize: pageSizeNum, total }
-    });
-  } catch (err) {
-    console.error('List Promoters error:', err);
-    return fail(res, req, 500, "INTERNAL_ERROR", "Failed to list Promoters");
-  }
-}
-
-/**
- * Get Promoter details
- * GET /admin/promoters/:promoterId
- */
-async function getPromoter(req, res) {
-  try {
-    const { promoterId } = req.params;
-
-    // Get Promoter basic info
-    const promoterResult = await pool.query(
-      `SELECT
-         u.id,
-         u.email,
-         u.name,
-         u.avatar_url,
-         u.account_status,
-         u.created_at,
-         pgl.guru_user_id,
-         gnm.territory_name
-       FROM users u
-       LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-       LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
-       WHERE u.id = $1 AND u.role = 'promoter'`,
-      [promoterId]
-    );
-
-    if (promoterResult.rowCount === 0) {
-      return fail(res, req, 404, "NOT_FOUND", "Promoter not found");
-    }
-
-    const promoter = promoterResult.rows[0];
-
-    // Get events
-    const eventsResult = await pool.query(
-      `SELECT
-         id,
-         title,
-         status,
-         completion_status,
-         tickets_sold,
-         start_at,
-         end_at,
-         created_at
-       FROM events
-       WHERE promoter_id = $1
-       ORDER BY created_at DESC
-       LIMIT 20`,
-      [promoterId]
-    );
-
-    // Get guru info if linked
-    let guruInfo = null;
-    if (promoter.guru_user_id) {
-      const guruResult = await pool.query(
-        `SELECT u.id, u.name, u.email, gl.level
-         FROM users u
-         LEFT JOIN guru_levels gl ON gl.guru_id = u.id AND gl.effective_until IS NULL
-         WHERE u.id = $1`,
-        [promoter.guru_user_id]
-      );
-      if (guruResult.rowCount > 0) {
-        guruInfo = {
-          id: guruResult.rows[0].id,
-          name: guruResult.rows[0].name,
-          email: guruResult.rows[0].email,
-          level: guruResult.rows[0].level,
-          territory: promoter.territory_name
-        };
-      }
-    }
-
-    return ok(res, req, {
-      promoter: {
-        id: promoter.id,
-        email: promoter.email,
-        name: promoter.name,
-        avatarUrl: promoter.avatar_url,
-        accountStatus: promoter.account_status,
-        createdAt: promoter.created_at
-      },
-      guru: guruInfo,
-      recentEvents: eventsResult.rows
-    });
-  } catch (err) {
-    console.error('Get Promoter details error:', err);
-    return fail(res, req, 500, "INTERNAL_ERROR", "Failed to get Promoter details");
   }
 }
 
@@ -1623,6 +697,43 @@ async function listRefundRequests(req, res) {
 }
 
 /**
+ * Turn a ring-fenced refund into a real escrow deduction once the King approves it:
+ * escrow balance and pending liabilities go down, the event liability records the refund,
+ * and the tickets on the order item are marked REFUNDED.
+ * Paying the money back to the buyer through the payment provider is not done here.
+ */
+async function applyApprovedRefundToEscrow(client, refundCase) {
+  const amountPence = Number(refundCase.amount || 0);
+  const eventResult = await client.query(
+    `SELECT territory_id FROM events WHERE id = $1 LIMIT 1`,
+    [refundCase.event_id]
+  );
+  const territoryId = eventResult.rows[0]?.territory_id || 1;
+
+  const escrowCols = await getEscrowColumns(client);
+  await adjustEscrowPence(client, territoryId, escrowCols, {
+    balanceDeltaPence: -amountPence,
+    pendingDeltaPence: -amountPence,
+  });
+
+  await client.query(
+    `UPDATE escrow_liabilities
+     SET refund_deductions = refund_deductions + ($1::numeric / 100.0),
+         status = CASE WHEN status = 'HOLDING' THEN 'PARTIAL_REFUND' ELSE status END,
+         updated_at = NOW()
+     WHERE event_id = $2`,
+    [amountPence, refundCase.event_id]
+  );
+
+  await client.query(
+    `UPDATE tickets
+     SET status = 'REFUNDED'
+     WHERE order_item_id = (SELECT order_item_id FROM refund_cases WHERE id = $1)`,
+    [refundCase.id]
+  );
+}
+
+/**
  * Approve buyer refund request (King's Account/Admin)
  * POST /admin/kings-account/refunds/:id/approve
  */
@@ -1674,6 +785,8 @@ async function approveRefundRequest(req, res) {
         "Refund case cannot be approved because escrow is not ring-fenced"
       );
     }
+
+    await applyApprovedRefundToEscrow(client, refundCase);
 
     await client.query(
       `UPDATE refund_cases
@@ -1754,7 +867,8 @@ async function rejectRefundRequest(req, res) {
     }
 
     const refundCase = caseResult.rows[0];
-    if (!["submitted", "under_review", "approved"].includes(refundCase.status)) {
+    // An approved case has already been deducted from escrow, so it can no longer be rejected.
+    if (!["submitted", "under_review"].includes(refundCase.status)) {
       await client.query("ROLLBACK");
       return fail(
         res,
@@ -1767,53 +881,15 @@ async function rejectRefundRequest(req, res) {
 
     // Release ring-fenced escrow (if previously reserved).
     if (refundCase.escrow_ring_fenced) {
-      const escrowColumnsResult = await client.query(
-        `SELECT column_name
-         FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = 'escrow_accounts'`
-      );
-      const escrowColumns = new Set(escrowColumnsResult.rows.map((r) => r.column_name));
-      const hasAccountType = escrowColumns.has("account_type");
-      const hasBalance = escrowColumns.has("balance");
-      const hasCurrentBalance = escrowColumns.has("current_balance");
-      const hasPendingLiabilities = escrowColumns.has("pending_liabilities");
-
       const territoryResult = await client.query(
         `SELECT territory_id FROM events WHERE id = $1 LIMIT 1`,
         [refundCase.event_id]
       );
       const territoryId = territoryResult.rows[0]?.territory_id || 1;
-
-      if (hasPendingLiabilities) {
-        if (hasBalance) {
-          await client.query(
-            `UPDATE escrow_accounts
-             SET pending_liabilities = GREATEST(COALESCE(pending_liabilities, 0) - $1, 0),
-                 updated_at = NOW()
-             WHERE territory_id = $2`,
-            [refundCase.amount, territoryId]
-          );
-        } else if (hasCurrentBalance) {
-          const amountInCurrency = Number(refundCase.amount || 0) / 100;
-          if (hasAccountType) {
-            await client.query(
-              `UPDATE escrow_accounts
-               SET pending_liabilities = GREATEST(COALESCE(pending_liabilities, 0) - $1, 0),
-                   updated_at = NOW()
-               WHERE territory_id = $2 AND account_type = 'escrow'`,
-              [amountInCurrency, territoryId]
-            );
-          } else {
-            await client.query(
-              `UPDATE escrow_accounts
-               SET pending_liabilities = GREATEST(COALESCE(pending_liabilities, 0) - $1, 0),
-                   updated_at = NOW()
-               WHERE territory_id = $2`,
-              [amountInCurrency, territoryId]
-            );
-          }
-        }
-      }
+      const escrowCols = await getEscrowColumns(client);
+      await adjustEscrowPence(client, territoryId, escrowCols, {
+        pendingDeltaPence: -Number(refundCase.amount || 0),
+      });
 
       await client.query(
         `INSERT INTO ledger_entries (
@@ -1994,6 +1070,36 @@ async function getEvent(req, res) {
       [eventId]
     );
 
+    // Get ticket types with availability (same shape as promoter event detail)
+    const ticketTypesResult = await pool.query(
+      `SELECT
+        id, name, description, currency, price_amount as "priceAmount",
+        booking_fee_amount as "bookingFeeAmount",
+        (price_amount + booking_fee_amount) as "totalAmount",
+        capacity_total as "capacityTotal",
+        qty_sold as "capacitySold",
+        per_order_limit as "perOrderLimit",
+        visibility,
+        status
+       FROM ticket_types
+       WHERE event_id = $1
+       ORDER BY sort_order, name`,
+      [eventId]
+    );
+
+    const ticketTypes = ticketTypesResult.rows.map((tt) => {
+      const capacityTotal = tt.capacityTotal;
+      const capacitySold = tt.capacitySold || 0;
+      const capacityRemaining = capacityTotal ? capacityTotal - capacitySold : null;
+
+      return {
+        ...tt,
+        totalAmount: parseInt(tt.totalAmount, 10),
+        capacitySold,
+        capacityRemaining,
+      };
+    });
+
     return ok(res, req, {
       event: {
         ...event,
@@ -2004,7 +1110,8 @@ async function getEvent(req, res) {
         },
         categories: categoryResult.rows,
         tags: tagsResult.rows,
-        vouchers: vouchersResult.rows
+        vouchers: vouchersResult.rows,
+        ticketTypes
       }
     });
   } catch (err) {
@@ -2368,7 +1475,7 @@ async function executeCharityPayout(req, res) {
 
     await client.query('COMMIT');
 
-    return ok(res, req, { execution }, 201);
+    return ok(res, req, { execution }, "Charity payout recorded successfully.", 201);
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Execute charity payout error:', err);
@@ -2547,28 +1654,16 @@ async function getKingsAccountOverview(req, res) {
 
     const ledgerTotals = await PlatformLedgerService.getOverviewTotals();
     const charityBalance = await CharityLedgerService.getBalance();
-    const guruRewardPoolResult = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM reward_vouchers WHERE owner_type = 'guru' AND status = 'active'`
-    );
-    const guruRewardPoolBalance = parseInt(guruRewardPoolResult.rows[0]?.total, 10) || 0;
 
     const obligationsPromoter = await pool.query(
       `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM ledger_allocations WHERE allocation_type = 'promoter_commission'`
     );
-    const obligationsNm = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM ledger_allocations WHERE allocation_type = 'network_manager_cash'`
-    );
     const promoterPayableTotal = parseInt(obligationsPromoter.rows[0]?.total, 10) || 0;
-    const networkManagerPayableTotal = parseInt(obligationsNm.rows[0]?.total, 10) || 0;
 
     const signupPromoter = await pool.query(
       `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM signup_fees WHERE role_type = 'promoter'`
     );
-    const signupGuru = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM signup_fees WHERE role_type = 'guru'`
-    );
     const promoterActivationFeesTotal = parseInt(signupPromoter.rows[0]?.total, 10) || 0;
-    const guruActivationFeesTotal = parseInt(signupGuru.rows[0]?.total, 10) || 0;
 
     return ok(res, req, {
       total_gross_payments: ledgerTotals.totalGrossPayments,
@@ -2576,15 +1671,12 @@ async function getKingsAccountOverview(req, res) {
       total_platform_profit: ledgerTotals.totalPlatformProfit,
       pot_balances: {
         charity_pot_balance: charityBalance,
-        guru_reward_pool_balance: guruRewardPoolBalance,
       },
       obligations_totals: {
         promoter_payable_total: promoterPayableTotal,
-        network_manager_payable_total: networkManagerPayableTotal,
       },
       signup_fee_totals: {
         promoter_activation_fees_total: promoterActivationFeesTotal,
-        guru_activation_fees_total: guruActivationFeesTotal,
       },
     });
   } catch (err) {
@@ -2618,25 +1710,15 @@ async function getLedger(req, res) {
 
 async function getObligations(req, res) {
   try {
-    const { type, status } = req.query;
-    const params = [];
-    const allocFilter =
-      type === "promoter"
-        ? "AND la.allocation_type = 'promoter_commission'"
-        : type === "network_manager"
-          ? "AND la.allocation_type = 'network_manager_cash'"
-          : "";
     const result = await pool.query(
       `SELECT la.beneficiary_type, la.beneficiary_id, u.name AS beneficiary_name,
               SUM(la.amount)::bigint AS amount_owed, MAX(la.created_at) AS last_updated
        FROM ledger_allocations la
        LEFT JOIN users u ON u.id = la.beneficiary_id
-       WHERE la.allocation_type IN ('promoter_commission', 'network_manager_cash')
-       ${allocFilter}
-       GROUP BY la.beneficiary_type, la.beneficiary_id, u.name`,
-      params
+       WHERE la.allocation_type = 'promoter_commission'
+       GROUP BY la.beneficiary_type, la.beneficiary_id, u.name`
     );
-    let rows = result.rows.map((r) => ({
+    const rows = result.rows.map((r) => ({
       beneficiary: r.beneficiary_name || `ID ${r.beneficiary_id}`,
       beneficiary_type: r.beneficiary_type,
       beneficiary_id: r.beneficiary_id,
@@ -2644,8 +1726,6 @@ async function getObligations(req, res) {
       status: "open",
       last_updated: r.last_updated,
     }));
-    if (type === "promoter") rows = rows.filter((r) => r.beneficiary_type === "promoter");
-    if (type === "network_manager") rows = rows.filter((r) => r.beneficiary_type === "network_manager");
     return ok(res, req, { obligations: rows });
   } catch (err) {
     console.error("Admin obligations error:", err);
@@ -2658,7 +1738,7 @@ async function getSignupFees(req, res) {
     const { role, date_from, date_to } = req.query;
     const params = [];
     let where = "1=1";
-    if (role === "promoter" || role === "guru") {
+    if (role === "promoter") {
       params.push(role);
       where += ` AND sf.role_type = $${params.length}`;
     }
@@ -2722,7 +1802,7 @@ async function exportObligationsCsv(req, res) {
       `SELECT la.beneficiary_type, la.beneficiary_id, u.name, SUM(la.amount)::bigint AS amount_owed, MAX(la.created_at) AS last_updated
        FROM ledger_allocations la
        LEFT JOIN users u ON u.id = la.beneficiary_id
-       WHERE la.allocation_type IN ('promoter_commission', 'network_manager_cash')
+       WHERE la.allocation_type = 'promoter_commission'
        GROUP BY la.beneficiary_type, la.beneficiary_id, u.name`
     );
     const header = "beneficiary_type,beneficiary_id,beneficiary_name,amount_owed,last_updated\n";
@@ -2742,13 +1822,9 @@ async function exportObligationsCsv(req, res) {
 async function exportPotsCsv(req, res) {
   try {
     const charityBalance = await CharityLedgerService.getBalance();
-    const guruPool = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM reward_vouchers WHERE owner_type = 'guru' AND status = 'active'`
-    );
     const rows = [
       ["pot", "balance_pence", "currency"].join(","),
       ["charity_pot", charityBalance, "GBP"].join(","),
-      ["guru_reward_pool", guruPool.rows[0]?.total || 0, "GBP"].join(","),
     ];
     await logAdminAudit(req, "pots_exported", "pots.csv", null);
     res.setHeader("Content-Type", "text/csv");
@@ -2853,103 +1929,6 @@ async function createTerritory(req, res) {
 }
 
 /**
- * GET /admin/territories/:id/licences - list licence holders for a territory
- */
-async function getTerritoryLicences(req, res) {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      return res.status(400).json({ error: true, message: "Invalid territory ID.", data: null });
-    }
-    const result = await pool.query(
-      `SELECT tl.id, tl.user_id, tl.licence_status, tl.payment_mode, tl.contract_start_date, tl.contract_end_date, tl.licence_balance_remaining,
-              tl.level_status, tl.service_fee_rate_current,
-              u.email, u.name
-       FROM territory_licences tl
-       JOIN users u ON u.id = tl.user_id
-       WHERE tl.territory_id = $1
-       ORDER BY tl.created_at DESC`,
-      [id]
-    );
-    return res.json({
-      error: false,
-      message: "Licences retrieved.",
-      data: { licences: result.rows },
-    });
-  } catch (err) {
-    console.error("Get territory licences error:", err);
-    return res.status(500).json({ error: true, message: "Unable to retrieve licences.", data: null });
-  }
-}
-
-/**
- * GET /admin/territory-applications?status=
- */
-async function listTerritoryApplications(req, res) {
-  try {
-    const { status } = req.query;
-    const list = await TerritoryApplicationService.listForAdmin({ status: status || undefined });
-    return res.json({
-      error: false,
-      message: "Territory applications retrieved.",
-      data: { applications: list },
-    });
-  } catch (err) {
-    console.error("List territory applications error:", err);
-    return res.status(500).json({ error: true, message: "Unable to retrieve applications.", data: null });
-  }
-}
-
-/**
- * POST /admin/territory-applications/:id/approve
- */
-async function approveTerritoryApplication(req, res) {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      return res.status(400).json({ error: true, message: "Invalid application ID.", data: null });
-    }
-    const app = await TerritoryApplicationService.approve(id, req.user.id);
-    if (!app) {
-      return res.status(404).json({ error: true, message: "Application not found or not in reviewable state.", data: null });
-    }
-    return res.json({
-      error: false,
-      message: "Territory application approved.",
-      data: { application: app },
-    });
-  } catch (err) {
-    console.error("Approve territory application error:", err);
-    return res.status(500).json({ error: true, message: "Unable to approve.", data: null });
-  }
-}
-
-/**
- * POST /admin/territory-applications/:id/reject
- */
-async function rejectTerritoryApplication(req, res) {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      return res.status(400).json({ error: true, message: "Invalid application ID.", data: null });
-    }
-    const { reason } = req.body || {};
-    const app = await TerritoryApplicationService.reject(id, req.user.id, reason);
-    if (!app) {
-      return res.status(404).json({ error: true, message: "Application not found.", data: null });
-    }
-    return res.json({
-      error: false,
-      message: "Territory application rejected.",
-      data: { application: app },
-    });
-  } catch (err) {
-    console.error("Reject territory application error:", err);
-    return res.status(500).json({ error: true, message: "Unable to reject.", data: null });
-  }
-}
-
-/**
  * PATCH /admin/territories/:id - update territory_licence_inventory
  */
 async function updateTerritory(req, res) {
@@ -2959,6 +1938,21 @@ async function updateTerritory(req, res) {
       return res.status(400).json({ error: true, message: "Invalid territory ID.", data: null });
     }
     const { max_slots, status, available_from } = req.body || {};
+
+    if (max_slots !== undefined && (!Number.isInteger(Number(max_slots)) || Number(max_slots) <= 0)) {
+      return res.status(400).json({ error: true, message: "max_slots must be a positive whole number.", data: null });
+    }
+    if (status !== undefined && !Object.values(TERRITORY_STATUS).includes(status)) {
+      return res.status(400).json({
+        error: true,
+        message: `status must be one of: ${Object.values(TERRITORY_STATUS).join(", ")}.`,
+        data: null,
+      });
+    }
+    if (available_from && Number.isNaN(new Date(available_from).getTime())) {
+      return res.status(400).json({ error: true, message: "available_from must be a valid date.", data: null });
+    }
+
     const updates = [];
     const params = [];
     let n = 1;
@@ -2984,6 +1978,9 @@ async function updateTerritory(req, res) {
       params
     );
     const row = await pool.query("SELECT * FROM territory_licence_inventory WHERE id = $1", [id]);
+    if (row.rowCount === 0) {
+      return res.status(404).json({ error: true, message: "Territory not found.", data: null });
+    }
     return res.json({
       error: false,
       message: "Territory updated.",
@@ -2992,30 +1989,6 @@ async function updateTerritory(req, res) {
   } catch (err) {
     console.error("Update territory error:", err);
     return res.status(500).json({ error: true, message: "Unable to update territory.", data: null });
-  }
-}
-
-/**
- * POST /admin/territory-licences/:id/suspend
- */
-async function suspendTerritoryLicence(req, res) {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id) || id <= 0) {
-      return res.status(400).json({ error: true, message: "Invalid licence ID.", data: null });
-    }
-    const updated = await TerritoryLicenceService.suspendLicence(id);
-    if (!updated) {
-      return res.status(404).json({ error: true, message: "Licence not found.", data: null });
-    }
-    return res.json({
-      error: false,
-      message: "Licence suspended.",
-      data: { licenceId: id },
-    });
-  } catch (err) {
-    console.error("Suspend territory licence error:", err);
-    return res.status(500).json({ error: true, message: "Unable to suspend.", data: null });
   }
 }
 
@@ -3070,24 +2043,12 @@ async function approveReferralPayoutByAdmin(req, res) {
 }
 
 module.exports = {
-  approveGuruApplication,
-  approveNetworkManagerApplication,
   approvePromoterApplication,
-  rejectNetworkManagerApplication,
   getEventAuditLogs,
   getEventMetrics,
-  createGuruInvite,
-  listGurus,
-  getGuruDetails,
-  activateGuru,
-  updateGuruLevel,
-  attachPromoterToGuru,
-  detachPromoterFromGuru,
   completeEvent,
   cancelEvent,
   approveCancellationRequest,
-  listPromoters,
-  getPromoter,
   approvePendingEvent,
   listPendingApprovalEvents,
   listRefundRequests,
@@ -3116,12 +2077,7 @@ module.exports = {
   listTerritories,
   getTerritory,
   createTerritory,
-  getTerritoryLicences,
-  listTerritoryApplications,
-  approveTerritoryApplication,
-  rejectTerritoryApplication,
   updateTerritory,
-  suspendTerritoryLicence,
   getReferralPool,
   approveReferralPayoutByAdmin,
 };

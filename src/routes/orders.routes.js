@@ -13,6 +13,7 @@ const {
   getBuyerTickets,
   getBuyerCancelledEventTickets,
   submitBuyerRefund,
+  getBuyerRefunds,
   getTicketQR,
   scanTicket
 } = require("../controllers/orders.controller");
@@ -65,6 +66,13 @@ router.get(
   requireAuth,
   requireRole("buyer"),
   getBuyerCancelledEventTickets
+);
+
+router.get(
+  "/buyer/refunds",
+  requireAuth,
+  requireRole("buyer"),
+  getBuyerRefunds
 );
 
 router.post(

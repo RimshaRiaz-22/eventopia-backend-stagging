@@ -3,7 +3,7 @@ const {
   UI_STATUS,
   TERRITORY_STATUS,
   LICENCE_STATUSES_HOLDING_SLOT,
-} = require("../config/networkManagerTerritory.config");
+} = require("../config/territory.config");
 
 /**
  * Get list of territory licence inventory with computed availability and slots.
@@ -82,6 +82,10 @@ async function getTerritoriesWithAvailability(options = {}) {
     if (uiStatus !== UI_STATUS.LOCKED && remainingSlots <= 0) {
       uiStatus = UI_STATUS.WAITLIST;
     }
+    // A disabled territory is never open for licences, whatever its slot count says.
+    if (row.territory_status === TERRITORY_STATUS.DISABLED) {
+      uiStatus = UI_STATUS.DISABLED;
+    }
 
     return {
       id: row.id,
@@ -94,6 +98,8 @@ async function getTerritoriesWithAvailability(options = {}) {
       active_slots: activeSlots,
       remaining_slots: remainingSlots,
       ui_status: uiStatus,
+      territory_status: row.territory_status,
+      available_from: row.available_from ? new Date(row.available_from).toISOString().split("T")[0] : null,
       available_from_label: availableFromLabel,
     };
   });
@@ -142,6 +148,18 @@ async function createTerritory(body) {
 
   if (!country_code || !region_name || !region_slug || !String(region_slug).trim()) {
     return { error: "country_code, region_name and region_slug are required." };
+  }
+  if (!Object.values(TERRITORY_STATUS).includes(status)) {
+    return { error: `status must be one of: ${Object.values(TERRITORY_STATUS).join(", ")}.` };
+  }
+  for (const [label, value] of [
+    ["licence_fee_amount", licence_fee_amount],
+    ["contract_duration_months", contract_duration_months],
+    ["max_slots", max_slots],
+  ]) {
+    if (!Number.isFinite(Number(value)) || Number(value) <= 0) {
+      return { error: `${label} must be a positive number.` };
+    }
   }
 
   const slug = String(region_slug).trim().toLowerCase();

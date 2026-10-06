@@ -11,6 +11,7 @@
 
 const db = require('../db');
 const escrowRepository = require('./escrow.repository');
+const { settlementEligibleFrom } = require('./escrowPayout.service');
 
 class EscrowService {
 
@@ -40,8 +41,8 @@ class EscrowService {
       const escrowBalance = escrowAccount?.current_balance || 0.00;
 
       // 3. Fetch liabilities and calculate total
-      const liabilities = await escrowRepository.fetchLiabilitiesForTerritory(territoryId, ['HOLDING', 'PAYOUT_ELIGIBLE']);
-      const totalLiabilities = await escrowRepository.calculateTotalLiabilities(territoryId, ['HOLDING', 'PAYOUT_ELIGIBLE']);
+      const liabilities = await escrowRepository.fetchLiabilitiesForTerritory(territoryId, ['HOLDING', 'PARTIAL_REFUND', 'PAYOUT_ELIGIBLE']);
+      const totalLiabilities = await escrowRepository.calculateTotalLiabilities(territoryId, ['HOLDING', 'PARTIAL_REFUND', 'PAYOUT_ELIGIBLE']);
 
       // 4. Calculate coverage ratio and status
       let coverageRatio = null;
@@ -106,14 +107,12 @@ class EscrowService {
 
       // 2. Build event array with settlement dates
       const events = liabilities.map(liability => {
-        let settlementEligibleFrom = null;
+        let settlementDate = null;
 
-        // If event is concluded (PAYOUT_ELIGIBLE), calculate settlement window
-        if (liability.status === 'PAYOUT_ELIGIBLE' && liability.concluded_at) {
-          const settlementWindow = 7; // days (adjust for post-575 rule: 1 day if needed)
-          const concludedDate = new Date(liability.concluded_at);
-          const settlementDate = new Date(concludedDate.getTime() + settlementWindow * 24 * 60 * 60 * 1000);
-          settlementEligibleFrom = settlementDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+        // Concluded events: 7-day settlement window, or 1 day for promoters with 575 settled tickets
+        if ((liability.status === 'PAYOUT_ELIGIBLE' || liability.status === 'PAID_OUT') && liability.concluded_at) {
+          settlementDate = settlementEligibleFrom(liability.concluded_at, liability.ticket_count_settled)
+            .toISOString().split('T')[0]; // YYYY-MM-DD format
         }
 
         return {
@@ -126,13 +125,21 @@ class EscrowService {
           refund_deductions: parseFloat(parseFloat(liability.refund_deductions).toFixed(2)),
           net_held: parseFloat(parseFloat(liability.net_liability).toFixed(2)),
           liability_status: liability.status,
-          settlement_eligible_from: settlementEligibleFrom,
-          payout_status: liability.status === 'PAYOUT_ELIGIBLE' ? 'PENDING_FINANCE_APPROVAL' : null
+          settlement_eligible_from: settlementDate,
+          paid_at: liability.paid_at || null,
+          payout_status:
+            liability.status === 'PAID_OUT' ? 'PAID'
+            : liability.status === 'PAYOUT_ELIGIBLE' ? 'PENDING_FINANCE_APPROVAL'
+            : null
         };
       });
 
       // 3. Calculate aggregates
-      const totalHeld = liabilities.reduce((sum, l) => sum + parseFloat(l.net_liability), 0);
+      const unpaid = liabilities.filter(l => l.status !== 'PAID_OUT');
+      const totalHeld = unpaid.reduce((sum, l) => sum + parseFloat(l.net_liability), 0);
+      const totalPaidOut = liabilities
+        .filter(l => l.status === 'PAID_OUT')
+        .reduce((sum, l) => sum + parseFloat(l.net_liability), 0);
       const totalPayoutEligible = liabilities
         .filter(l => l.status === 'PAYOUT_ELIGIBLE')
         .reduce((sum, l) => sum + parseFloat(l.net_liability), 0);
@@ -143,6 +150,7 @@ class EscrowService {
         promoter_id: promoterId,
         total_held_in_escrow: parseFloat(totalHeld.toFixed(2)),
         total_payout_eligible: parseFloat(totalPayoutEligible.toFixed(2)),
+        total_paid_out: parseFloat(totalPaidOut.toFixed(2)),
         total_refund_deductions: parseFloat(totalRefundDeductions.toFixed(2)),
         events: events,
         retrieved_at: new Date().toISOString()
@@ -163,7 +171,10 @@ class EscrowService {
    * @param {string} toDate - optional YYYY-MM-DD
    * @returns {object} interest history with summary and entries
    */
-  async getInterestHistory(territoryId, fromDate = null, toDate = null) {
+  async getInterestHistory(territoryId, fromDate = null, toDate = null, options = {}) {
+    const page = Math.max(1, parseInt(options.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(options.limit, 10) || 10));
+    const sort = String(options.sort).toLowerCase() === 'asc' ? 'asc' : 'desc';
     try {
       // 1. Verify territory exists
       const territory = await escrowRepository.fetchTerritory(territoryId);
@@ -174,7 +185,8 @@ class EscrowService {
       // 2. Fetch escrow account to get current balance and total interest
       const escrowAccount = await escrowRepository.fetchEscrowAccount(territoryId);
       const currentBalance = parseFloat(escrowAccount?.current_balance || 0.00);
-      const totalInterestAllTime = parseFloat(escrowAccount?.interest_earned || 0.00);
+      // The log is the source of truth. escrow_accounts.interest_earned is not kept in step with it.
+      const totalInterestAllTime = await escrowRepository.calculateTotalInterestEarned(territoryId);
 
       // 3. Calculate balance excluding interest (for regulatory comparison)
       const escrowBalanceExcludingInterest = currentBalance - totalInterestAllTime;
@@ -189,16 +201,13 @@ class EscrowService {
       }
 
       // 5. Fetch interest entries
-      const entries = await escrowRepository.fetchInterestEntries(territoryId, fromDate, toDate);
-
-      // 6. Calculate period total
-      let totalInterestInPeriod = 0.00;
-      if (fromDate && toDate) {
-        totalInterestInPeriod = parseFloat(await escrowRepository.calculateInterestInPeriod(territoryId, fromDate, toDate));
-      } else if (entries.length > 0) {
-        // If no date filter, sum all entries
-        totalInterestInPeriod = entries.reduce((sum, e) => sum + parseFloat(e.interest_amount), 0);
-      }
+      const { count: totalEntries, total: totalInterestInPeriod } =
+        await escrowRepository.summariseInterestEntries(territoryId, fromDate, toDate);
+      const entries = await escrowRepository.fetchInterestEntries(territoryId, fromDate, toDate, {
+        limit,
+        offset: (page - 1) * limit,
+        sort
+      });
 
       return {
         territory_id: territoryId,
@@ -222,6 +231,12 @@ class EscrowService {
           recorded_by_name: e.recorded_by_name || 'System',
           created_at: e.created_at
         })),
+        pagination: {
+          page,
+          limit,
+          total: totalEntries,
+          total_pages: Math.max(1, Math.ceil(totalEntries / limit))
+        },
         retrieved_at: new Date().toISOString()
       };
 

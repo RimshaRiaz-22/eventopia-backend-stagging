@@ -1,15 +1,16 @@
 const pool = require("../db");
 const { resolveTier, TIERS } = require("../services/tierResolver.service");
+const { TIER_CREDIT_SPLITS_PENCE } = require("../config/credit.config");
 
 // Day 8 baseline split constants mapped by tier label.
-// Network manager role has been removed in this project customisation.
+// The Guru role no longer exists: its share is retained by Eventopia (added to the eventopia figure in formatTierRow).
 const SPLITS_BY_TIER = {
-  1: { promoter: "0.50", guru: "0.30", network_manager: "0.00", eventopia: "0.29", reinvestment: "0.00", vat_amount: "0.31", noda_fee: "0.35", distributable_pool: "1.19" },
-  2: { promoter: "0.50", guru: "0.35", network_manager: "0.00", eventopia: "0.40", reinvestment: "0.00", vat_amount: "0.40", noda_fee: "0.35", distributable_pool: "1.60" },
-  3: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.35", reinvestment: "0.17", vat_amount: "0.48", noda_fee: "0.35", distributable_pool: "2.02" },
-  4: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.50", reinvestment: "0.56", vat_amount: "0.59", noda_fee: "0.35", distributable_pool: "2.56" },
-  5: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "0.75", reinvestment: "1.15", vat_amount: "0.75", noda_fee: "0.35", distributable_pool: "3.40" },
-  6: { promoter: "0.50", guru: "0.50", network_manager: "0.00", eventopia: "1.00", reinvestment: "2.02", vat_amount: "0.98", noda_fee: "0.35", distributable_pool: "4.52" },
+  1: { promoter: "0.50", guru: "0.30", eventopia: "0.29", reinvestment: "0.00", vat_amount: "0.31", noda_fee: "0.35", distributable_pool: "1.19" },
+  2: { promoter: "0.50", guru: "0.35", eventopia: "0.40", reinvestment: "0.00", vat_amount: "0.40", noda_fee: "0.35", distributable_pool: "1.60" },
+  3: { promoter: "0.50", guru: "0.50", eventopia: "0.35", reinvestment: "0.17", vat_amount: "0.48", noda_fee: "0.35", distributable_pool: "2.02" },
+  4: { promoter: "0.50", guru: "0.50", eventopia: "0.50", reinvestment: "0.56", vat_amount: "0.59", noda_fee: "0.35", distributable_pool: "2.56" },
+  5: { promoter: "0.50", guru: "0.50", eventopia: "0.75", reinvestment: "1.15", vat_amount: "0.75", noda_fee: "0.35", distributable_pool: "3.40" },
+  6: { promoter: "0.50", guru: "0.50", eventopia: "1.00", reinvestment: "2.02", vat_amount: "0.98", noda_fee: "0.35", distributable_pool: "4.52" },
 };
 
 const FIVE_MIN_MS = 5 * 60 * 1000;
@@ -67,10 +68,9 @@ function formatTierRow(t) {
     noda_fee: split.noda_fee,
     distributable_pool: split.distributable_pool,
     splits: {
-      promoter: split.promoter,
-      guru: split.guru,
-      network_manager: split.network_manager,
-      eventopia: split.eventopia,
+      // what the promoter is actually credited per ticket (same table allocateCredit pays from)
+      promoter: toMoneyString((TIER_CREDIT_SPLITS_PENCE[t.tier_number] || TIER_CREDIT_SPLITS_PENCE[1]).promoter / 100),
+      eventopia: toMoneyString(Number(split.eventopia) + Number(split.guru)),
       reinvestment: split.reinvestment,
     },
   };
@@ -145,6 +145,8 @@ async function getCreditTier(req, res) {
         });
       }
 
+      const band = TIERS.find((t) => t.tier_label === resolved.tier_label);
+
       // Prefer booking fee configured in ticket_types for this territory/price, fallback to resolver.
       const exactFee = await pool.query(
         `SELECT tt.booking_fee_amount
@@ -166,8 +168,9 @@ async function getCreditTier(req, res) {
         territory_name: territory.name,
         matched_tier: formatTierRow({
           tier_number: resolved.tier_label,
-          min: normalized,
-          max: normalized,
+          // show the tier's price band, not the single price that was searched
+          min: band.min,
+          max: Number.isFinite(band.max) ? band.max : null,
           booking_fee: bookingFee,
         }),
         referral_mode_active: referralModeActive,

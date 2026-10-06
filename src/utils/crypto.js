@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
 function generateOtp(length = 4) {
-  // Default to 4 digits for Network Manager, but allow customization
+  // Default to 4 digits, but allow customization
   const min = Math.pow(10, length - 1);
   const max = Math.pow(10, length) - 1;
   return Math.floor(min + Math.random() * (max - min + 1)).toString();
@@ -26,23 +26,28 @@ function hashToken(token) {
     .digest("hex");
 }
 
-/**
- * Generate JWT access token (24 hours by default)
- */
-function generateAccessToken(payload) {
-  const secret = process.env.JWT_SECRET;
-  const expiresIn = process.env.JWT_ACCESS_EXPIRE || "24h";
+const DURATION_UNIT_MS = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
 
-  return jwt.sign(payload, secret, { expiresIn });
+/**
+ * Access token lifetime in ms, read from JWT_ACCESS_EXPIRE (e.g. "24h", "30m", "7d"). Default 24h.
+ * The session row and the JWT both use this value, so they always expire together.
+ */
+function getAccessTokenTtlMs() {
+  const raw = String(process.env.JWT_ACCESS_EXPIRE || "24h").trim();
+  const match = /^(\d+)\s*([smhd])$/.exec(raw);
+  if (!match) {
+    throw new Error(`Invalid JWT_ACCESS_EXPIRE "${raw}". Use a number plus s, m, h or d (e.g. 24h).`);
+  }
+  return Number(match[1]) * DURATION_UNIT_MS[match[2]];
 }
 
 /**
- * Generate JWT refresh token (long-lived, 7-30 days)
+ * Generate JWT access token. This is the only token issued on login; when it expires the user logs in again.
  */
-function generateRefreshToken(payload) {
-  const secret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || "default-secret-change-in-production";
-  const expiresIn = process.env.JWT_REFRESH_EXPIRE || "30d"; // 30 days default
-  
+function generateAccessToken(payload) {
+  const secret = process.env.JWT_SECRET;
+  const expiresIn = Math.floor(getAccessTokenTtlMs() / 1000);
+
   return jwt.sign(payload, secret, { expiresIn });
 }
 
@@ -51,14 +56,6 @@ function generateRefreshToken(payload) {
  */
 function verifyAccessToken(token) {
   const secret = process.env.JWT_SECRET || "default-secret-change-in-production";
-  return jwt.verify(token, secret);
-}
-
-/**
- * Verify JWT refresh token
- */
-function verifyRefreshToken(token) {
-  const secret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || "default-secret-change-in-production";
   return jwt.verify(token, secret);
 }
 
@@ -81,10 +78,9 @@ module.exports = {
   hashOtp,
   generateToken,
   hashToken,
+  getAccessTokenTtlMs,
   generateAccessToken,
-  generateRefreshToken,
   verifyAccessToken,
-  verifyRefreshToken,
   generateEmailVerificationToken,
   generatePasswordResetToken,
 };

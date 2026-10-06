@@ -7,24 +7,6 @@ const pool = require("../db");
 const { ok, fail } = require("../utils/standardResponse");
 const { resolveTier, getBookingFeePence } = require("../services/tierResolver.service");
 
-async function deriveHierarchyFromPromoter(promoterId) {
-  const result = await pool.query(
-    `SELECT
-      pgl.guru_user_id as guru_id,
-      gnm.network_manager_user_id as network_manager_id,
-      gnm.territory_id,
-      t.name as territory_name
-    FROM users u
-    LEFT JOIN promoter_guru_links pgl ON pgl.promoter_user_id = u.id
-    LEFT JOIN guru_network_manager gnm ON gnm.guru_user_id = pgl.guru_user_id
-    LEFT JOIN territories t ON t.id = gnm.territory_id
-    WHERE u.id = $1`,
-    [promoterId]
-  );
-  if (result.rowCount === 0) return { guru_id: null, network_manager_id: null, territory_id: null };
-  return result.rows[0];
-}
-
 /**
  * POST /api/v1/events — Create event (promoter). Ticket tiers: tier_name, ticket_price (GBP), quantity_available. Booking fee from Tier Resolver.
  */
@@ -51,8 +33,7 @@ async function createEventV1(req, res) {
       }
     }
 
-    const hierarchy = await deriveHierarchyFromPromoter(promoterId);
-    const territoryId = hierarchy.territory_id || 1;
+    const territoryId = 1; // default territory
     const eventDate = new Date(event_date);
     if (Number.isNaN(eventDate.getTime())) {
       return fail(res, req, 400, "INVALID_DATE", "event_date must be valid ISO8601");
@@ -65,16 +46,14 @@ async function createEventV1(req, res) {
       const cityValue = venue || "UK";
       const eventResult = await client.query(
         `INSERT INTO events (
-          promoter_id, guru_id, network_manager_id, territory_id,
+          promoter_id, territory_id,
           title, description, start_at, end_at, timezone,
           format, access_mode, visibility, city, city_display, venue_name, venue_address,
           status, ticketing_required
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Europe/London', 'in_person', 'ticketed', 'public', $9, $9, $10, $11, 'draft', true)
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'Europe/London', 'in_person', 'ticketed', 'public', $7, $7, $8, $9, 'draft', true)
         RETURNING id, status, created_at`,
         [
           promoterId,
-          hierarchy.guru_id,
-          hierarchy.network_manager_id,
           territoryId,
           title,
           description || null,
