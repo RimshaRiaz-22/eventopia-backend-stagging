@@ -8,6 +8,7 @@
 const pool = require("../db");
 const { createLedgerEntry } = require("./ledgerCore.service");
 const { addGrossRevenueToLiability } = require("./escrowLiability.service");
+const { getEscrowColumns, ensureEscrowAccount, adjustEscrowPence } = require("./escrowAccount.util");
 
 /**
  * Process incoming ticket payment: update escrow balance and write ledger entries.
@@ -35,20 +36,13 @@ async function receiveTicketPayment({
   try {
     await client.query("BEGIN");
 
-    // Ensure escrow account exists for territory
-    await client.query(
-      `INSERT INTO escrow_accounts (territory_id, balance, pending_liabilities, updated_at)
-       VALUES ($1, 0, 0, NOW())
-       ON CONFLICT (territory_id) DO NOTHING`,
-      [territory_id]
-    );
+    // Ensure escrow account exists for territory (works with the legacy and newer column layouts)
+    const escrowCols = await getEscrowColumns(client);
+    await ensureEscrowAccount(client, territory_id, escrowCols);
 
     // Credit escrow balance (amounts in pence)
     if (escrow_amount_pence > 0) {
-      await client.query(
-        `UPDATE escrow_accounts SET balance = balance + $1, updated_at = NOW() WHERE territory_id = $2`,
-        [escrow_amount_pence, territory_id]
-      );
+      await adjustEscrowPence(client, territory_id, escrowCols, { balanceDeltaPence: escrow_amount_pence });
 
       // Keep promoter escrow view in sync with confirmed ticket revenue.
       // Best-effort: do not interrupt payment routing if liability context is not available yet.

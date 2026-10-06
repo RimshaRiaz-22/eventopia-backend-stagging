@@ -75,7 +75,7 @@ async function handleCheckoutSessionCompleted(event) {
     }
 
     const orderResult = await client.query(
-      `SELECT o.*, e.territory_id, e.promoter_id, e.guru_id, e.network_manager_id, e.id AS event_id
+      `SELECT o.*, e.territory_id, e.promoter_id, e.id AS event_id
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE o.id = $1
@@ -145,7 +145,7 @@ async function handlePaymentIntentSucceeded(event) {
     }
 
     const orderResult = await client.query(
-      `SELECT o.*, e.territory_id, e.promoter_id, e.guru_id, e.network_manager_id, e.id AS event_id
+      `SELECT o.*, e.territory_id, e.promoter_id, e.id AS event_id
        FROM orders o
        JOIN events e ON e.id = o.event_id
        WHERE o.id = $1

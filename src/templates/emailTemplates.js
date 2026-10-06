@@ -854,157 +854,14 @@ function getCharityApplicationRequiresReviewTemplate(application, promoter, admi
 }
 
 /**
- * Guru Invite Template
- * @param {Object} options - Template options
- * @param {string} options.email - Guru email
- * @param {string} options.registrationUrl - Registration link
- * @param {number} options.expiresInMinutes - Minutes until expiry
- * @returns {string} - HTML content
- */
-function getGuruInviteTemplate({ registrationUrl, expiresInMinutes = 15 }) {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body { font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; }
-    .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-    .header { color: #333; margin-bottom: 30px; }
-    .header h2 { color: #007bff; margin: 0 0 10px 0; }
-    .message { color: #666; line-height: 1.8; margin-bottom: 30px; font-size: 14px; }
-    .button-container { text-align: center; margin: 40px 0; }
-    .button { background-color: #007bff; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: 600; font-size: 16px; }
-    .button:hover { background-color: #0056b3; transition: background-color 0.3s; }
-    .expiry-warning { background-color: #fff3cd; padding: 12px 15px; border-radius: 4px; color: #856404; margin: 25px 0; font-size: 13px; border-left: 4px solid #ffc107; }
-    .footer { border-top: 1px solid #eee; padding-top: 20px; color: #999; font-size: 12px; text-align: center; }
-    .link-alternative { color: #999; font-size: 12px; margin-top: 20px; word-break: break-all; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h2>Welcome to Eventopia! 🎉</h2>
-      <p style="margin: 0; color: #666;">You've been invited to become a Guru</p>
-    </div>
-    
-    <div class="message">
-      <p>Hello,</p>
-      <p>You have been invited to join <strong>Eventopia</strong> as a <strong>Guru partner</strong>. Gurus are key partners who recruit and manage promoters, help coordinate events, and earn commissions.</p>
-      <p>To accept this invitation and complete your registration, please click the button below:</p>
-    </div>
-
-    <div class="button-container">
-      <a href="${registrationUrl}" class="button">✓ Verify Invite & Register</a>
-    </div>
-
-    <div class="expiry-warning">
-      <strong>⏰ Urgent:</strong> This invitation link expires in <strong>${expiresInMinutes} minutes</strong>. Complete your registration immediately!
-    </div>
-
-    <div class="message">
-      <p><strong>Having trouble?</strong> Copy and paste this link in your browser:</p>
-      <div class="link-alternative">
-        ${registrationUrl}
-      </div>
-    </div>
-
-    <div class="message">
-      <p>If you didn't request this invitation or have any questions, please reply to this email.</p>
-      <p>Best regards,<br><strong>The Eventopia Team</strong></p>
-    </div>
-
-    <div class="footer">
-      <p>This is an automated message from Eventopia. Please do not reply directly to this email.</p>
-      <p>&copy; 2026 Eventopia. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-`;
-}
-
-/**
- * Guru Invite Resend Template
- * @param {Object} options - Template options
- * @param {string} options.registrationUrl - Registration link
- * @param {number} options.expiresInMinutes - Minutes until expiry
- * @returns {string} - HTML content
- */
-function getGuruInviteResendTemplate({ registrationUrl, expiresInMinutes = 15 }) {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body { font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; }
-    .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-    .header { color: #333; margin-bottom: 30px; }
-    .header h2 { color: #28a745; margin: 0 0 10px 0; }
-    .message { color: #666; line-height: 1.8; margin-bottom: 30px; font-size: 14px; }
-    .button-container { text-align: center; margin: 40px 0; }
-    .button { background-color: #28a745; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: 600; font-size: 16px; }
-    .button:hover { background-color: #218838; transition: background-color 0.3s; }
-    .expiry-warning { background-color: #fff3cd; padding: 12px 15px; border-radius: 4px; color: #856404; margin: 25px 0; font-size: 13px; border-left: 4px solid #ffc107; }
-    .footer { border-top: 1px solid #eee; padding-top: 20px; color: #999; font-size: 12px; text-align: center; }
-    .link-alternative { color: #999; font-size: 12px; margin-top: 20px; word-break: break-all; }
-    .old-link-note { background-color: #f8d7da; padding: 12px 15px; border-radius: 4px; color: #721c24; margin: 20px 0; font-size: 13px; border-left: 4px solid #dc3545; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h2>✅ New Eventopia Guru Invitation</h2>
-      <p style="margin: 0; color: #666;">Your previous invitation has expired. Here's a fresh one!</p>
-    </div>
-    
-    <div class="message">
-      <p>Hello,</p>
-      <p>Your previous invitation to join <strong>Eventopia</strong> as a <strong>Guru partner</strong> has expired, but we've sent you a brand new one!</p>
-      <p>To complete your registration, please click the button below:</p>
-    </div>
-
-    <div class="button-container">
-      <a href="${registrationUrl}" class="button">✓ Verify Invite & Register Now</a>
-    </div>
-
-    <div class="expiry-warning">
-      <strong>⏰ Important:</strong> This invitation link expires in <strong>${expiresInMinutes} minutes</strong>. Don't wait—complete your registration now!
-    </div>
-
-    <div class="old-link-note">
-      <strong>📌 Note:</strong> Your old invitation link is no longer valid. Please use this new link instead.
-    </div>
-
-    <div class="message">
-      <p><strong>Copy-paste link (if button doesn't work):</strong></p>
-      <div class="link-alternative">
-        ${registrationUrl}
-      </div>
-    </div>
-
-    <div class="message">
-      <p>If you didn't request this resend or have any questions, please reply to this email.</p>
-      <p>Best regards,<br><strong>The Eventopia Team</strong></p>
-    </div>
-
-    <div class="footer">
-      <p>&copy; 2026 Eventopia. All rights reserved.</p>
-    </div>
-  </div>
-</body>
-</html>
-`;
-}
-
-/**
  * Promoter Referral Invite Template
  * @param {Object} options - Template options
- * @param {string} options.guruName - Guru name
+ * @param {string} options.inviterName - Name shown as the inviter (defaults to the Eventopia team)
  * @param {string} options.registrationUrl - Registration link
  * @param {number} options.expiresInMinutes - Minutes until expiry
  * @returns {string} - HTML content
  */
-function getPromoterReferralInviteTemplate({ guruName = 'Your Guru', registrationUrl, expiresInMinutes = 15 }) {
+function getPromoterReferralInviteTemplate({ inviterName = 'the Eventopia team', registrationUrl, expiresInMinutes = 15 }) {
   return `
 <!DOCTYPE html>
 <html>
@@ -1021,23 +878,23 @@ function getPromoterReferralInviteTemplate({ guruName = 'Your Guru', registratio
     .expiry-warning { background-color: #fff3cd; padding: 12px 15px; border-radius: 4px; color: #856404; margin: 25px 0; font-size: 13px; border-left: 4px solid #ffc107; }
     .footer { border-top: 1px solid #eee; padding-top: 20px; color: #999; font-size: 12px; text-align: center; }
     .link-alternative { color: #999; font-size: 12px; margin-top: 20px; word-break: break-all; }
-    .guru-note { background-color: #e7f3ff; padding: 15px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #007bff; }
+    .invite-note { background-color: #e7f3ff; padding: 15px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #007bff; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <h2>🎯 Join Eventopia as a Promoter!</h2>
-      <p style="margin: 0; color: #666;">You've been invited by <strong>${guruName}</strong></p>
+      <p style="margin: 0; color: #666;">You've been invited by <strong>${inviterName}</strong></p>
     </div>
     
-    <div class="guru-note">
-      <p style="margin: 0;"><strong>${guruName}</strong> has invited you to become a Promoter on Eventopia. As a Promoter, you'll help promote events and earn commissions!</p>
+    <div class="invite-note">
+      <p style="margin: 0;"><strong>${inviterName}</strong> has invited you to become a Promoter on Eventopia. As a Promoter, you'll help promote events and earn commissions!</p>
     </div>
 
     <div class="message">
       <p>Hello,</p>
-      <p>You have been invited to join <strong>Eventopia</strong> as a <strong>Promoter partner</strong>. Working with <strong>${guruName}</strong>, you'll promote events, track ticket sales, and unlock rewards.</p>
+      <p>You have been invited to join <strong>Eventopia</strong> as a <strong>Promoter partner</strong>. Working with <strong>${inviterName}</strong>, you'll promote events, track ticket sales, and unlock rewards.</p>
       <p>To accept this invitation and complete your registration, please click the button below:</p>
     </div>
 
@@ -1074,12 +931,12 @@ function getPromoterReferralInviteTemplate({ guruName = 'Your Guru', registratio
 /**
  * Promoter Referral Invite Resend Template
  * @param {Object} options - Template options
- * @param {string} options.guruName - Guru name
+ * @param {string} options.inviterName - Name shown as the inviter (defaults to the Eventopia team)
  * @param {string} options.registrationUrl - Registration link
  * @param {number} options.expiresInMinutes - Minutes until expiry
  * @returns {string} - HTML content
  */
-function getPromoterReferralInviteResendTemplate({ guruName = 'Your Guru', registrationUrl, expiresInMinutes = 15 }) {
+function getPromoterReferralInviteResendTemplate({ inviterName = 'the Eventopia team', registrationUrl, expiresInMinutes = 15 }) {
   return `
 <!DOCTYPE html>
 <html>
@@ -1103,12 +960,12 @@ function getPromoterReferralInviteResendTemplate({ guruName = 'Your Guru', regis
   <div class="container">
     <div class="header">
       <h2>✅ New Promoter Referral Invitation</h2>
-      <p style="margin: 0; color: #666;">From <strong>${guruName}</strong> - Your link is refreshed!</p>
+      <p style="margin: 0; color: #666;">From <strong>${inviterName}</strong> - Your link is refreshed!</p>
     </div>
     
     <div class="message">
       <p>Hello,</p>
-      <p>Your previous referral invitation to join <strong>Eventopia</strong> as a <strong>Promoter</strong> with <strong>${guruName}</strong> has expired. Here's a brand new one!</p>
+      <p>Your previous referral invitation to join <strong>Eventopia</strong> as a <strong>Promoter</strong> with <strong>${inviterName}</strong> has expired. Here's a brand new one!</p>
       <p>To complete your registration, please click the button below:</p>
     </div>
 
@@ -1132,7 +989,7 @@ function getPromoterReferralInviteResendTemplate({ guruName = 'Your Guru', regis
     </div>
 
     <div class="message">
-      <p>Questions? Ask ${guruName} or reply to this email.</p>
+      <p>Questions? Ask ${inviterName} or reply to this email.</p>
       <p>Best regards,<br><strong>The Eventopia Team</strong></p>
     </div>
 
@@ -1157,8 +1014,6 @@ module.exports = {
   getCharityApplicationRejectedTemplate,
   getCharityApplicationCompletedTemplate,
   getCharityApplicationRequiresReviewTemplate,
-  getGuruInviteTemplate,
-  getGuruInviteResendTemplate,
   getPromoterReferralInviteTemplate,
   getPromoterReferralInviteResendTemplate,
 };

@@ -30,6 +30,8 @@ function toEntry(row) {
     proof_reference: row.proof_reference ?? null,
     status: row.status,
     created_at: row.created_at,
+    user_name: row.user_name ?? null,
+    user_email: row.user_email ?? null,
   };
 }
 
@@ -159,7 +161,11 @@ async function getLedgerList(req, res) {
       to,
       page = "1",
       limit = "50",
+      sort_order,
     } = req.query;
+
+    // Whitelisted, so it is safe to interpolate. The Ledger page's date-sort toggle sends this.
+    const sortDirection = String(sort_order).toLowerCase() === "asc" ? "ASC" : "DESC";
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
@@ -205,7 +211,13 @@ async function getLedgerList(req, res) {
 
     params.push(limitNum, offset);
     const result = await pool.query(
-      `SELECT ${LEDGER_COLUMNS} FROM ledger_entries ${where} ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+      `SELECT le.*, u.name AS user_name, u.email AS user_email
+       FROM (
+         SELECT ${LEDGER_COLUMNS} FROM ledger_entries ${where}
+         ORDER BY created_at ${sortDirection}, id ${sortDirection} LIMIT $${idx} OFFSET $${idx + 1}
+       ) le
+       LEFT JOIN users u ON u.id = le.user_id
+       ORDER BY le.created_at ${sortDirection}, le.id ${sortDirection}`,
       params
     );
 
@@ -224,7 +236,9 @@ async function getLedgerEntry(req, res) {
   try {
     const { entry_id } = req.params;
     const result = await pool.query(
-      `SELECT ${LEDGER_COLUMNS} FROM ledger_entries WHERE id = $1`,
+      `SELECT le.*, u.name AS user_name, u.email AS user_email
+       FROM (SELECT ${LEDGER_COLUMNS} FROM ledger_entries WHERE id = $1) le
+       LEFT JOIN users u ON u.id = le.user_id`,
       [entry_id]
     );
     if (result.rows.length === 0) {

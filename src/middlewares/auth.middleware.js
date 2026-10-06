@@ -1,5 +1,5 @@
 const pool = require("../db");
-const { validateAccessToken } = require("../services/session.service");
+const { validateAccessToken, SESSION_EXPIRED_CODE } = require("../services/session.service");
 const { fail } = require("../utils/standardResponse");
 
 async function requireAuth(req, res, next) {
@@ -88,6 +88,8 @@ async function requireAuth(req, res, next) {
   } catch (err) {
     return res.status(401).json({
       error: true,
+      // SESSION_EXPIRED tells the client to clear its login and send the user to the login page.
+      ...(err.code === SESSION_EXPIRED_CODE ? { code: SESSION_EXPIRED_CODE } : {}),
       message: err.message || "Authentication failed",
       data: null,
     });
@@ -329,46 +331,6 @@ async function requireOrderOwnership(req, res, next) {
 }
 
 /**
- * Middleware to check if user has a pending Network Manager application
- * Blocks access to Network Manager module routes for pending applicants
- * Allows: /auth/me, /network-managers/applications/me, profile updates
- */
-async function requireNotPendingNetworkManager(req, res, next) {
-  try {
-    // Check if user has a pending Network Manager application
-    const result = await pool.query(
-      `
-      SELECT account_status
-      FROM network_manager_applications
-      WHERE user_id = $1
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      [req.user.id]
-    );
-
-    if (result.rowCount > 0) {
-      const application = result.rows[0];
-      if (application.account_status === 'pending') {
-        return res.status(403).json({
-          error: true,
-          message: "Your Network Manager application is pending approval. You cannot access this feature until your application is approved.",
-          data: null,
-        });
-      }
-    }
-
-    next();
-  } catch (err) {
-    return res.status(500).json({
-      error: true,
-      message: "Unable to verify application status.",
-      data: null,
-    });
-  }
-}
-
-/**
  * Middleware to verify ticket ownership
  */
 async function requireTicketOwnership(req, res, next) {
@@ -411,40 +373,6 @@ async function requireTicketOwnership(req, res, next) {
   next();
 }
 
-/**
- * Middleware to allow Network Manager applicants to access account setup and application routes
- * Users with NULL role who have verified their email can access these routes
- */
-async function requireNetworkManagerApplicant(req, res, next) {
-  try {
-    // Check if user has NULL role (Network Manager applicant)
-    if (req.user.role !== null && req.user.role !== undefined) {
-      return res.status(403).json({
-        error: true,
-        message: "This endpoint is only for Network Manager applicants.",
-        data: null,
-      });
-    }
-
-    // Check if email is verified
-    if (req.user.email_status !== 'verified') {
-      return res.status(403).json({
-        error: true,
-        message: "Please verify your email first.",
-        data: null,
-      });
-    }
-
-    next();
-  } catch (err) {
-    return res.status(500).json({
-      error: true,
-      message: "Unable to verify applicant status.",
-      data: null,
-    });
-  }
-}
-
 module.exports = {
   requireAuth,
   requireRole,
@@ -457,6 +385,4 @@ module.exports = {
   requireTicketTypeOwnership,
   requireOrderOwnership,
   requireTicketOwnership,
-  requireNotPendingNetworkManager,
-  requireNetworkManagerApplicant,
 };

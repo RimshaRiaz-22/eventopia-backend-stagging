@@ -91,7 +91,7 @@ async function verifyKingsTwofaCode({ email, twofaCode }) {
 /**
  * GET /api/v1/profile
  * Fetch current user profile (name, email, phone, role, territory, avatar)
- * Auth: JWT (Promoter, Guru, Network Manager, Buyer)
+ * Auth: JWT (Promoter, Buyer)
  */
 exports.getProfile = async (req, res) => {
   try {
@@ -99,9 +99,9 @@ exports.getProfile = async (req, res) => {
     const userId = req.user.id;
 
     const userResult = await pool.query(
-      `SELECT id, name, email, phone, role, territory_id, avatar_url
+      `SELECT id, name, email, phone, city, role, territory_id, avatar_url
        FROM users
-       WHERE id = $1 AND LOWER(role) IN ('promoter', 'guru', 'network_manager', 'buyer')`,
+       WHERE id = $1 AND LOWER(role) IN ('promoter', 'buyer')`,
       [userId]
     );
 
@@ -140,6 +140,7 @@ exports.getProfile = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone || null,
+        city: user.city || null,
         role: user.role,
         avatar_url: user.avatar_url || null,
       
@@ -173,6 +174,9 @@ exports.updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
     const { name, email, phone, avatar_url, current_password, territory } = req.body;
+    // A blank city is ignored (not cleared), so a form that couldn't show an existing value never wipes it.
+    const city = typeof req.body.city === "string" ? req.body.city.trim() : req.body.city;
+    const hasCity = city !== undefined && city !== null && city !== "";
     const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : email;
 
     // VALIDATION 1: Reject if attempting to update territory (read-only)
@@ -185,17 +189,17 @@ exports.updateProfile = async (req, res) => {
     }
 
     // VALIDATION 2: Reject if no fields to update
-    if (name === undefined && email === undefined && phone === undefined && avatar_url === undefined) {
+    if (name === undefined && email === undefined && phone === undefined && avatar_url === undefined && !hasCity) {
       return res.status(400).json({
         error: true,
-        message: "At least one field (name, email, phone, or avatar_url) must be provided for update.",
+        message: "At least one field (name, email, phone, city, or avatar_url) must be provided for update.",
         data: null,
       });
     }
 
     // Get current user to check current password if email is being changed
     const userResult = await pool.query(
-      "SELECT id, name, email, phone, avatar_url, password_hash, role FROM users WHERE id = $1",
+      "SELECT id, name, email, phone, city, avatar_url, password_hash, role FROM users WHERE id = $1",
       [userId]
     );
 
@@ -247,6 +251,15 @@ exports.updateProfile = async (req, res) => {
       }
     }
 
+    // VALIDATION 3b: City must be a sensible string when provided
+    if (hasCity && (typeof city !== "string" || city.length < 2 || city.length > 100)) {
+      return res.status(422).json({
+        error: true,
+        message: "City must be between 2 and 100 characters.",
+        data: null,
+      });
+    }
+
     // VALIDATION 4: Validate phone format if provided
     if (phone !== undefined) {
       if (!isValidE164Phone(phone)) {
@@ -284,6 +297,12 @@ exports.updateProfile = async (req, res) => {
       paramCount++;
     }
 
+    if (hasCity) {
+      updateFields.push(`city = $${paramCount}`);
+      updateValues.push(city);
+      paramCount++;
+    }
+
     if (avatar_url !== undefined) {
       updateFields.push(`avatar_url = $${paramCount}`);
       updateValues.push(avatar_url);
@@ -299,7 +318,7 @@ exports.updateProfile = async (req, res) => {
       UPDATE users
       SET ${updateFields.join(", ")}
       WHERE id = $${paramCount}
-      RETURNING id, name, email, phone, role
+      RETURNING id, name, email, phone, city, role
     `;
 
     const updateResult = await pool.query(updateQuery, updateValues);
@@ -319,6 +338,7 @@ exports.updateProfile = async (req, res) => {
         if (name !== undefined) changeDetails.name = { old: currentUser.name, new: name };
         if (isEmailChanged) changeDetails.email = { old: currentUser.email, new: normalizedEmail };
         if (phone !== undefined) changeDetails.phone = { old: currentUser.phone, new: phone };
+        if (hasCity) changeDetails.city = { old: currentUser.city, new: city };
         if (avatar_url !== undefined) changeDetails.avatar_url = { old: currentUser.avatar_url, new: avatar_url };
 
         await pool.query(

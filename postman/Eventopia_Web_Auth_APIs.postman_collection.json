@@ -1,0 +1,1137 @@
+{
+  "info": {
+    "name": "Eventopia Web Auth - Promoter, Buyer, King Promoters CRUD",
+    "description": "Only the APIs the web app calls for Promoter and Buyer auth, plus the King's Promoters tab. Tokens are saved automatically into promoter_token / buyer_token; paste king_token manually. OTPs appear in responses only when NODE_ENV=development.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:4000"
+    },
+    {
+      "key": "password",
+      "value": "Str0ng!Pass1"
+    },
+    {
+      "key": "promoter_email",
+      "value": "promoter@example.com"
+    },
+    {
+      "key": "promoter_invite_email",
+      "value": "invited.promoter@example.com"
+    },
+    {
+      "key": "buyer_email",
+      "value": "buyer@example.com"
+    },
+    {
+      "key": "king_token",
+      "value": ""
+    },
+    {
+      "key": "promoter_token",
+      "value": ""
+    },
+    {
+      "key": "buyer_token",
+      "value": ""
+    },
+    {
+      "key": "challenge_id",
+      "value": ""
+    },
+    {
+      "key": "user_id",
+      "value": ""
+    },
+    {
+      "key": "otp",
+      "value": ""
+    },
+    {
+      "key": "referral_token",
+      "value": ""
+    },
+    {
+      "key": "reset_token",
+      "value": ""
+    },
+    {
+      "key": "promoter_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Promoter - invited by King (/auth/promoter/register?referral_token=...)",
+      "item": [
+        {
+          "name": "Validate invite token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/referrals/validate/{{referral_token}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "referrals",
+                "validate",
+                "{{referral_token}}"
+              ]
+            },
+            "description": "PromoterInviteRegister page + 'Continue Setup' in the account-setup modal. 200 { valid, email, name } | 401 invalid | 409 used | 410 expired."
+          }
+        },
+        {
+          "name": "Accept invite (register)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/promoter/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "promoter",
+                "register"
+              ]
+            },
+            "description": "Email comes from the invite. Active immediately, no approval. Saves promoter_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referral_token\": \"{{referral_token}}\",\n  \"name\": \"Invited Promoter\",\n  \"password\": \"{{password}}\",\n  \"phone\": \"+447911123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"promoter_token\", t); console.log(\"saved promoter_token\"); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resend invite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/promoters/invites/resend",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "promoters",
+                "invites",
+                "resend"
+              ]
+            },
+            "description": "Shown when the link expired (token-expired modal / login account-setup modal).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_invite_email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json()?.data?.referral_token;",
+                  "if (t) pm.collectionVariables.set(\"referral_token\", t);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Promoter - self registration (/register)",
+      "description": "Then the King approves it (section 5). After approval the promoter uses Login.",
+      "item": [
+        {
+          "name": "Step 2 - Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Add \"referral_token\" only when arriving from a promoter-to-promoter referral link. Saves challenge_id / otp (otp only in development).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_email}}\",\n  \"password\": \"{{password}}\",\n  \"role_requested\": \"promoter\",\n  \"role\": \"promoter\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json()?.data || {};",
+                  "if (d.challengeId) pm.collectionVariables.set(\"challenge_id\", d.challengeId);",
+                  "if (d.otp) pm.collectionVariables.set(\"otp\", d.otp);",
+                  "if (d.userId) pm.collectionVariables.set(\"user_id\", d.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify OTP (VerifyIdentity page)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/otp/verify",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "otp",
+                "verify"
+              ]
+            },
+            "description": "Logs the promoter in so the application can be submitted. Saves promoter_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_email}}\",\n  \"otp\": \"{{otp}}\",\n  \"challengeId\": \"{{challenge_id}}\",\n  \"userId\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"promoter_token\", t); console.log(\"saved promoter_token\"); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/otp/resend",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "otp",
+                "resend"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json()?.data || {};",
+                  "if (d.challengeId) pm.collectionVariables.set(\"challenge_id\", d.challengeId);",
+                  "if (d.otp) pm.collectionVariables.set(\"otp\", d.otp);",
+                  "if (d.userId) pm.collectionVariables.set(\"user_id\", d.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Upload avatar (optional photo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{promoter_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/files/avatar",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "files",
+                "avatar"
+              ]
+            },
+            "description": "Step 6 profile photo. Response contains the avatar URL to pass as avatar_url below.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "avatar",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Step 6 - Submit application",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{promoter_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/promoters/applications",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "promoters",
+                "applications"
+              ]
+            },
+            "description": "Phone is required (E.164). Account becomes pending_approval until the King approves.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"avatar_url\": null,\n  \"agreed_to_terms\": true,\n  \"agreed_to_promoter_agreement\": true,\n  \"agreed_to_activation_fee_terms\": true,\n  \"full_name\": \"Self Promoter\",\n  \"phone\": \"+447911123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Buyer",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\",\n  \"password\": \"{{password}}\",\n  \"role_requested\": \"buyer\",\n  \"role\": \"buyer\",\n  \"name\": \"Test Buyer\",\n  \"city\": \"London\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json()?.data || {};",
+                  "if (d.challengeId) pm.collectionVariables.set(\"challenge_id\", d.challengeId);",
+                  "if (d.otp) pm.collectionVariables.set(\"otp\", d.otp);",
+                  "if (d.userId) pm.collectionVariables.set(\"user_id\", d.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify OTP (VerifyIdentity page)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/otp/verify",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "otp",
+                "verify"
+              ]
+            },
+            "description": "Verifies email and logs in. Saves buyer_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\",\n  \"otp\": \"{{otp}}\",\n  \"challengeId\": \"{{challenge_id}}\",\n  \"userId\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"buyer_token\", t); console.log(\"saved buyer_token\"); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/otp/resend",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "otp",
+                "resend"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json()?.data || {};",
+                  "if (d.challengeId) pm.collectionVariables.set(\"challenge_id\", d.challengeId);",
+                  "if (d.otp) pm.collectionVariables.set(\"otp\", d.otp);",
+                  "if (d.userId) pm.collectionVariables.set(\"user_id\", d.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OAuth register / login (Google, Facebook)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/oauth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "oauth",
+                "register"
+              ]
+            },
+            "description": "OAuthRoleSelection / OAuthApplication pages. For a promoter send role \"promoter\" and applicationData { phone, agreed_to_terms, agreed_to_promoter_agreement, agreed_to_activation_fee_terms }.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\",\n  \"name\": \"Test Buyer\",\n  \"oauthProvider\": \"google\",\n  \"oauthId\": \"google-123\",\n  \"avatarUrl\": \"\",\n  \"deviceId\": \"postman\",\n  \"deviceToken\": null,\n  \"role\": \"buyer\",\n  \"role_requested\": \"buyer\",\n  \"applicationData\": {\n    \"city\": \"London\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"buyer_token\", t); console.log(\"saved buyer_token\"); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Login, password reset, logout (Promoter + Buyer)",
+      "item": [
+        {
+          "name": "Login - Promoter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "403 with code EMAIL_NOT_VERIFIED / PROFILE_INCOMPLETE / PROMOTER_INVITE_PENDING opens the account-setup modal; other 403 = pending approval / blocked. Saves promoter_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"promoter_token\", t); console.log(\"saved promoter_token\"); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - Buyer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const t = r?.data?.accessToken || r?.data?.access_token;",
+                  "if (t) { pm.collectionVariables.set(\"buyer_token\", t); console.log(\"saved buyer_token\"); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forgot password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/forgot-password",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot-password"
+              ]
+            },
+            "description": "Response data.resetToken is used by the web to open /reset-password?token=... Saves reset_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{buyer_email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json()?.data?.resetToken;",
+                  "if (t) pm.collectionVariables.set(\"reset_token\", t);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/reset-password",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset-password"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{reset_token}}\",\n  \"newPassword\": \"NewStr0ng!Pass1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Logout - Promoter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{promoter_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Logout - Buyer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{buyer_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. King - Promoters tab",
+      "description": "Uses king_token. Log in as King on the web (or via your existing King OTP flow) and paste the token into the king_token variable.",
+      "item": [
+        {
+          "name": "Invite promoter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/promoters/invites",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "promoters",
+                "invites"
+              ]
+            },
+            "description": "Invite Promoter drawer. Saves referral_token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{promoter_invite_email}}\",\n  \"name\": \"Invited Promoter\",\n  \"expires_in_minutes\": 15\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.json()?.data?.referral_token;",
+                  "if (t) pm.collectionVariables.set(\"referral_token\", t);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List promoters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters?page=1&limit=5&applicationStatus=pending&status=active&search=",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "applicationStatus",
+                  "value": "pending"
+                },
+                {
+                  "key": "status",
+                  "value": "active"
+                },
+                {
+                  "key": "search",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Filters are optional: applicationStatus = pending | approved | rejected, status = active | blocked | inactive. Saves the first promoter id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const p = pm.response.json()?.data?.promoters?.[0];",
+                  "if (p) pm.collectionVariables.set(\"promoter_id\", p.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Promoter details (eye icon)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters/{{promoter_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters",
+                "{{promoter_id}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Update promoter (edit modal)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters/{{promoter_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters",
+                "{{promoter_id}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"New Name\",\n  \"phone\": \"+447911123456\",\n  \"avatar_url\": \"\",\n  \"territory_name\": \"London\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Approve application",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters/{{promoter_id}}/application-status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters",
+                "{{promoter_id}}",
+                "application-status"
+              ]
+            },
+            "description": "Only for self-registered promoters (pending application).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Reject application",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters/{{promoter_id}}/application-status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters",
+                "{{promoter_id}}",
+                "application-status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"rejected\",\n  \"comment\": \"Reason is required\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Delete promoter",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{king_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/promoters/{{promoter_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "promoters",
+                "{{promoter_id}}"
+              ]
+            },
+            "description": "409 if the promoter has events / financial records.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Optional reason\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

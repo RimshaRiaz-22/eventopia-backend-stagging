@@ -1,12 +1,25 @@
 const pool = require("../db");
 
-async function resolvePromoterProfileId(clientOrDb, promoterUserId) {
+/**
+ * Idempotent: return promoter_profiles.id for a user, creating the row if it is missing.
+ * Only the invite flows used to create it, so promoters approved through an application
+ * had no profile and their events never got an escrow liability.
+ */
+async function ensurePromoterProfile(clientOrDb, promoterUserId) {
+  await clientOrDb.query(
+    `INSERT INTO promoter_profiles (user_id, created_at, updated_at)
+     VALUES ($1, NOW(), NOW())
+     ON CONFLICT (user_id) DO NOTHING`,
+    [promoterUserId]
+  );
   const result = await clientOrDb.query(
     `SELECT id FROM promoter_profiles WHERE user_id = $1 LIMIT 1`,
     [promoterUserId]
   );
   return result.rows[0]?.id || null;
 }
+
+const resolvePromoterProfileId = ensurePromoterProfile;
 
 async function fetchEventEscrowContext(clientOrDb, eventId) {
   const eventResult = await clientOrDb.query(
@@ -19,14 +32,14 @@ async function fetchEventEscrowContext(clientOrDb, eventId) {
   if (eventResult.rowCount === 0) return null;
 
   const event = eventResult.rows[0];
-  if (!event.promoter_id || !event.territory_id) return null;
+  if (!event.promoter_id) return null;
 
   const promoterProfileId = await resolvePromoterProfileId(clientOrDb, event.promoter_id);
   if (!promoterProfileId) return null;
 
   return {
     eventId: event.id,
-    territoryId: event.territory_id,
+    territoryId: event.territory_id || 1,
     promoterProfileId,
   };
 }
@@ -88,6 +101,7 @@ async function markPayoutEligibleForEvent(eventId, options = {}) {
 }
 
 module.exports = {
+  ensurePromoterProfile,
   ensureEscrowLiabilityForEvent,
   addGrossRevenueToLiability,
   markPayoutEligibleForEvent,

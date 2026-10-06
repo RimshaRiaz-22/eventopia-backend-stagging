@@ -1,6 +1,8 @@
 
 
 const escrowService = require('../services/escrow.service');
+const { ensurePromoterProfile } = require('../services/escrowLiability.service');
+const payoutService = require('../services/escrowPayout.service');
 
 class EscrowController {
 
@@ -79,18 +81,14 @@ class EscrowController {
         // If tokenPromoterId is not in JWT, look it up from user_id
         if (!tokenPromoterId) {
           console.log(`[EscrowController] Looking up promoter_profile for user_id: ${req.user.id}`);
-          const profileResult = await db.query(
-            'SELECT id FROM promoter_profiles WHERE user_id = $1',
-            [req.user.id]
-          );
-          console.log(`[EscrowController] Profile lookup result:`, profileResult.rows);
-          if (profileResult.rows.length === 0) {
+          // Create the profile on first visit if this promoter never got one.
+          tokenPromoterId = await ensurePromoterProfile(db, req.user.id);
+          if (!tokenPromoterId) {
             return res.status(403).json({
               error: 'UNAUTHORIZED_ROLE',
               message: 'Promoter profile not found. Contact support.'
             });
           }
-          tokenPromoterId = profileResult.rows[0].id;
           console.log(`[EscrowController] Resolved promoter_id to: ${tokenPromoterId}`);
         }
         // Promoter: always use own ID from token, ignore query param (privacy)
@@ -131,7 +129,7 @@ class EscrowController {
    * CONTRACT 17: GET /api/v1/escrow/interest/:territory_id
    * Returns interest history for a territory
    * Auth: JWT required | Role: finance, kings_account
-   * Query params: from (optional), to (optional) - both YYYY-MM-DD format
+   * Query params: from / from_date, to / to_date (optional, YYYY-MM-DD), page, limit (max 100), sort (asc|desc by created_at)
    * 
    * @param {object} req - Express request
    * @param {object} res - Express response
@@ -139,7 +137,10 @@ class EscrowController {
   async getInterestHistory(req, res) {
     try {
       const { territory_id } = req.params;
-      const { from, to } = req.query;
+      // The web app sends from_date / to_date; from / to are also accepted.
+      const from = req.query.from || req.query.from_date;
+      const to = req.query.to || req.query.to_date;
+      const { page, limit, sort } = req.query;
 
       // Validate territory_id is a valid integer
       if (!territory_id || isNaN(territory_id)) {
@@ -170,7 +171,8 @@ class EscrowController {
       const interestHistory = await escrowService.getInterestHistory(
         parseInt(territory_id),
         from || null,
-        to || null
+        to || null,
+        { page, limit, sort }
       );
       
       return res.status(200).json(interestHistory);
@@ -199,5 +201,49 @@ class EscrowController {
     }
   }
 }
+
+/**
+ * GET /api/v1/escrow/payouts?territory_id&status=eligible|paid|all&page&limit
+ * King / finance: concluded events waiting for (or already given) a payout.
+ */
+EscrowController.prototype.listPayouts = async function (req, res) {
+  try {
+    const territoryId = req.query.territory_id ? parseInt(req.query.territory_id, 10) : null;
+    if (req.query.territory_id && Number.isNaN(territoryId)) {
+      return res.status(400).json({ error: 'INVALID_INPUT', code: 'INVALID_INPUT', message: 'territory_id must be a valid integer' });
+    }
+    const result = await payoutService.listPayouts({
+      territoryId,
+      status: req.query.status,
+      page: req.query.page,
+      limit: req.query.limit
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('[EscrowController] listPayouts error:', error.message);
+    return res.status(500).json({ error: 'SERVER_ERROR', code: 'SERVER_ERROR', message: 'Unable to load payouts. Please retry.' });
+  }
+};
+
+/**
+ * POST /api/v1/escrow/payouts/:liability_id/approve   body: { notes?, override_reason? }
+ */
+EscrowController.prototype.approvePayout = async function (req, res) {
+  try {
+    const liabilityId = parseInt(req.params.liability_id, 10);
+    if (Number.isNaN(liabilityId) || liabilityId <= 0) {
+      return res.status(400).json({ error: 'INVALID_INPUT', code: 'INVALID_INPUT', message: 'liability_id must be a valid integer' });
+    }
+    const { notes, override_reason } = req.body || {};
+    const result = await payoutService.approvePayout(liabilityId, req.user, { notes, override_reason });
+    return res.status(200).json({ ...result, message: 'Payout approved and recorded.' });
+  } catch (error) {
+    if (error instanceof payoutService.PayoutError) {
+      return res.status(error.status).json({ error: error.code, code: error.code, message: error.message, data: error.data });
+    }
+    console.error('[EscrowController] approvePayout error:', error.message);
+    return res.status(500).json({ error: 'SERVER_ERROR', code: 'SERVER_ERROR', message: 'Unable to approve payout. Please retry.' });
+  }
+};
 
 module.exports = new EscrowController();

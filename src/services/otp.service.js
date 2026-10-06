@@ -3,7 +3,7 @@ const { generateOtp, hashOtp } = require("../utils/crypto");
 const { sendOtpEmail } = require("./email.service");
 
 async function createOtp({ email, purpose }) {
-  // Use 4-digit OTP for Network Manager signup, 6-digit for others
+  // Use 4-digit OTP for signup, 6-digit for others
   const otpLength = purpose === "signup" ? 4 : 6;
   const otp = generateOtp(otpLength);
   const otpHash = hashOtp(otp);

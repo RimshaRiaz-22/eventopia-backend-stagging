@@ -48,7 +48,7 @@ class EscrowRepository {
         ea.territory_id,
         COALESCE(
           NULLIF(to_jsonb(ea)->>'current_balance', '')::numeric,
-          NULLIF(to_jsonb(ea)->>'balance', '')::numeric,
+          NULLIF(to_jsonb(ea)->>'balance', '')::numeric / 100.0,
           0::numeric
         ) AS current_balance,
         COALESCE(NULLIF(to_jsonb(ea)->>'pending_liabilities', '')::numeric, 0::numeric) AS pending_liabilities,
@@ -118,12 +118,15 @@ class EscrowRepository {
              el.gross_ticket_revenue, el.refund_deductions, el.net_liability,
              el.status, el.created_at, el.updated_at,
              e.title as event_title, e.start_at as event_date, e.status as event_status, e.completed_at as concluded_at,
-             COALESCE(COUNT(CASE WHEN t.status = 'ACTIVE' THEN 1 END), 0) as tickets_sold
+             pp.ticket_count_settled, ep.approved_at as paid_at,
+             COALESCE(COUNT(t.id), 0) as tickets_sold
       FROM escrow_liabilities el
       JOIN events e ON el.event_id = e.id
-      LEFT JOIN tickets t ON e.id = t.event_id AND t.status = 'ACTIVE'
-      WHERE el.promoter_id = $1 AND el.status != 'PAID_OUT'
-      GROUP BY el.liability_id, e.id
+      JOIN promoter_profiles pp ON pp.id = el.promoter_id
+      LEFT JOIN escrow_payouts ep ON ep.liability_id = el.liability_id
+      LEFT JOIN tickets t ON e.id = t.event_id AND t.status IN ('ACTIVE', 'USED', 'REFUNDED')
+      WHERE el.promoter_id = $1
+      GROUP BY el.liability_id, e.id, pp.ticket_count_settled, ep.approved_at
       ORDER BY e.start_at DESC
     `;
     const result = await db.query(query, [promoterId]);
@@ -142,7 +145,7 @@ class EscrowRepository {
         COUNT(*) as event_count,
         COALESCE(SUM(net_liability), 0::numeric) as total_amount
       FROM escrow_liabilities
-      WHERE territory_id = $1 AND status IN ('HOLDING', 'PAYOUT_ELIGIBLE')
+      WHERE territory_id = $1 AND status IN ('HOLDING', 'PARTIAL_REFUND', 'PAYOUT_ELIGIBLE')
       GROUP BY status
     `;
     const result = await db.query(query, [territoryId]);
@@ -154,12 +157,12 @@ class EscrowRepository {
     };
 
     result.rows.forEach(row => {
-      if (row.status === 'HOLDING') {
-        breakdown.holding_liabilities = parseFloat(row.total_amount);
+      if (row.status === 'HOLDING' || row.status === 'PARTIAL_REFUND') {
+        breakdown.holding_liabilities += parseFloat(row.total_amount);
       } else if (row.status === 'PAYOUT_ELIGIBLE') {
         breakdown.payout_eligible_liabilities = parseFloat(row.total_amount);
       }
-      breakdown.liability_event_count += row.event_count;
+      breakdown.liability_event_count += Number(row.event_count);
     });
 
     return breakdown;
@@ -175,12 +178,13 @@ class EscrowRepository {
    * @param {string} toDate - YYYY-MM-DD (optional)
    * @returns {array} interest entries
    */
-  async fetchInterestEntries(territoryId, fromDate = null, toDate = null) {
+  async fetchInterestEntries(territoryId, fromDate = null, toDate = null, options = {}) {
+    const { limit = null, offset = 0, sort = 'desc' } = options;
     let query = `
       SELECT eil.interest_id, eil.territory_id, eil.period_start, eil.period_end,
              eil.opening_balance, eil.interest_rate, eil.interest_amount, eil.source,
              eil.recorded_by, eil.created_at,
-             CONCAT(u.name) as recorded_by_name
+             COALESCE(NULLIF(u.name, ''), 'System') as recorded_by_name
       FROM escrow_interest_log eil
       LEFT JOIN users u ON eil.recorded_by = u.id
       WHERE eil.territory_id = $1
@@ -197,10 +201,42 @@ class EscrowRepository {
       query += ` AND eil.period_start <= $${params.length}`;
     }
 
-    query += ` ORDER BY eil.period_end DESC`;
+    // Sort by when the entry was created (the "Created At" column), newest first by default.
+    const direction = String(sort).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    query += ` ORDER BY eil.created_at ${direction}, eil.interest_id ${direction}`;
+
+    if (limit) {
+      params.push(limit);
+      query += ` LIMIT $${params.length}`;
+      params.push(offset);
+      query += ` OFFSET $${params.length}`;
+    }
 
     const result = await db.query(query, params);
     return result.rows;
+  }
+
+  /**
+   * Count and sum interest entries that overlap an optional date range
+   * @returns {{count: number, total: number}}
+   */
+  async summariseInterestEntries(territoryId, fromDate = null, toDate = null) {
+    let query = `
+      SELECT COUNT(*)::int AS count, COALESCE(SUM(interest_amount), 0::numeric) AS total
+      FROM escrow_interest_log
+      WHERE territory_id = $1
+    `;
+    const params = [territoryId];
+    if (fromDate) {
+      params.push(fromDate);
+      query += ` AND period_end >= $${params.length}`;
+    }
+    if (toDate) {
+      params.push(toDate);
+      query += ` AND period_start <= $${params.length}`;
+    }
+    const result = await db.query(query, params);
+    return { count: result.rows[0].count, total: parseFloat(result.rows[0].total) };
   }
 
   /**

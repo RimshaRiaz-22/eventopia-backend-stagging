@@ -86,7 +86,7 @@ const ENTRIES = [
   {
     entry_type: "REINVESTMENT",
     user_id: null,
-    role: "guru",
+    role: "kings_account",
     level: "L3",
     territory_id: null,
     amount: 10000,

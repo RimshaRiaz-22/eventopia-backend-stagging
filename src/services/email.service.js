@@ -5,8 +5,6 @@ const {
   getOtpTemplate, 
   getOtpSubject, 
   getPasswordResetTemplate,
-  getGuruInviteTemplate,
-  getGuruInviteResendTemplate,
   getPromoterReferralInviteTemplate,
   getPromoterReferralInviteResendTemplate
 } = require("../templates/emailTemplates");
@@ -116,7 +114,7 @@ async function sendPasswordResetEmail(email, resetToken, userName) {
  * @param {string} options.userName - User's name
  * @param {string} options.eventTitle - Event title
  * @param {number} options.amountPence - Voucher amount in pence
- * @param {string} options.voucherType - Type of voucher (promoter/guru)
+ * @param {string} options.voucherType - Type of voucher (promoter)
  * @param {Date} options.expiresAt - Expiry date
  */
 async function sendRewardVoucherEmail({ to, userName, eventTitle, amountPence, voucherType, expiresAt }) {
@@ -206,27 +204,6 @@ async function sendRewardNotificationEmails(eventId, rewards) {
       }
     }
 
-    // Send guru email
-    if (rewards.guruReward > 0 && rewards.guruId) {
-      const guruResult = await pool.query(
-        'SELECT email, name FROM users WHERE id = $1',
-        [rewards.guruId]
-      );
-
-      if (guruResult.rowCount > 0) {
-        const guru = guruResult.rows[0];
-        const expiresAt = rewards.expiresAt || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // Default to 12 months
-
-        await sendRewardVoucherEmail({
-          to: guru.email,
-          userName: guru.name || 'Guru',
-          eventTitle: eventTitle,
-          amountPence: rewards.guruReward,
-          voucherType: 'Guru',
-          expiresAt: expiresAt
-        });
-      }
-    }
   } catch (err) {
     console.error('Error sending reward notification emails:', err);
     // Don't throw - email failure shouldn't break the flow
@@ -360,56 +337,19 @@ async function sendEmailVerificationEmail(email, verificationToken, userName = "
 }
 
 /**
- * Send Guru Invitation Email
- * @param {Object} options - Email options
- * @param {string} options.email - Recipient email
- * @param {string} options.registrationUrl - Registration URL
- * @param {number} options.expiresInMinutes - Expiration time in minutes
- * @returns {Promise}
- */
-async function sendGuruInviteEmail({ email, registrationUrl, expiresInMinutes = 15 }) {
-  const html = getGuruInviteTemplate({ registrationUrl, expiresInMinutes });
-
-  return sendEmail({
-    to: email,
-    subject: `Welcome to Eventopia - Guru Invitation (Expires in ${expiresInMinutes} minutes)`,
-    html,
-  });
-}
-
-/**
- * Send Guru Invitation Resend Email
- * @param {Object} options - Email options
- * @param {string} options.email - Recipient email
- * @param {string} options.registrationUrl - Registration URL
- * @param {number} options.expiresInMinutes - Expiration time in minutes
- * @returns {Promise}
- */
-async function sendGuruInviteResendEmail({ email, registrationUrl, expiresInMinutes = 15 }) {
-  const html = getGuruInviteResendTemplate({ registrationUrl, expiresInMinutes });
-
-  return sendEmail({
-    to: email,
-    subject: `🎉 New Guru Invitation Link - Complete Registration (Expires in ${expiresInMinutes} minutes)`,
-    html,
-  });
-}
-
-/**
  * Send Promoter Referral Invitation Email
  * @param {Object} options - Email options
  * @param {string} options.email - Recipient email
- * @param {string} options.guruName - Guru's name
  * @param {string} options.registrationUrl - Registration URL
  * @param {number} options.expiresInMinutes - Expiration time in minutes
  * @returns {Promise}
  */
-async function sendPromoterReferralInviteEmail({ email, guruName, registrationUrl, expiresInMinutes = 15 }) {
-  const html = getPromoterReferralInviteTemplate({ guruName, registrationUrl, expiresInMinutes });
+async function sendPromoterReferralInviteEmail({ email, registrationUrl, expiresInMinutes = 15 }) {
+  const html = getPromoterReferralInviteTemplate({ registrationUrl, expiresInMinutes });
 
   return sendEmail({
     to: email,
-    subject: `🎯 Promoter Invitation from ${guruName} (Expires in ${expiresInMinutes} minutes)`,
+    subject: `🎯 Promoter Invitation from Eventopia (Expires in ${expiresInMinutes} minutes)`,
     html,
   });
 }
@@ -418,17 +358,16 @@ async function sendPromoterReferralInviteEmail({ email, guruName, registrationUr
  * Send Promoter Referral Invitation Resend Email
  * @param {Object} options - Email options
  * @param {string} options.email - Recipient email
- * @param {string} options.guruName - Guru's name
  * @param {string} options.registrationUrl - Registration URL
  * @param {number} options.expiresInMinutes - Expiration time in minutes
  * @returns {Promise}
  */
-async function sendPromoterReferralInviteResendEmail({ email, guruName, registrationUrl, expiresInMinutes = 15 }) {
-  const html = getPromoterReferralInviteResendTemplate({ guruName, registrationUrl, expiresInMinutes });
+async function sendPromoterReferralInviteResendEmail({ email, registrationUrl, expiresInMinutes = 15 }) {
+  const html = getPromoterReferralInviteResendTemplate({ registrationUrl, expiresInMinutes });
 
   return sendEmail({
     to: email,
-    subject: `🎯 New Promoter Invitation from ${guruName} (Expires in ${expiresInMinutes} minutes)`,
+    subject: `🎯 New Promoter Invitation from Eventopia (Expires in ${expiresInMinutes} minutes)`,
     html,
   });
 }
@@ -441,8 +380,6 @@ module.exports = {
   sendRewardNotificationEmails,
   sendVoucherExpiryReminderEmail,
   sendEmailVerificationEmail,
-  sendGuruInviteEmail,
-  sendGuruInviteResendEmail,
   sendPromoterReferralInviteEmail,
   sendPromoterReferralInviteResendEmail,
 };

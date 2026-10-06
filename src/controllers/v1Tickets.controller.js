@@ -43,11 +43,12 @@ async function purchaseTicketsV1(req, res) {
     }
 
     const client = await pool.connect();
+    let committed = false;
     try {
       await client.query("BEGIN");
 
       const eventResult = await client.query(
-        `SELECT id, promoter_id, guru_id, network_manager_id, territory_id, status FROM events WHERE id = $1`,
+        `SELECT id, promoter_id, territory_id, status, end_at FROM events WHERE id = $1`,
         [eventId]
       );
       if (eventResult.rowCount === 0) {
@@ -58,6 +59,11 @@ async function purchaseTicketsV1(req, res) {
       if (!isBuyerVisibleEventStatus(event.status)) {
         await client.query("ROLLBACK");
         return fail(res, req, 400, "EVENT_NOT_LIVE", `Event is not live (must be ${BUYER_VISIBLE_EVENT_STATUS})`);
+      }
+
+      if (event.end_at && new Date(event.end_at).getTime() < Date.now()) {
+        await client.query("ROLLBACK");
+        return fail(res, req, 400, "EVENT_ENDED", "This event has already ended");
       }
 
       const tierResult = await client.query(
@@ -141,33 +147,38 @@ async function purchaseTicketsV1(req, res) {
       );
 
       await client.query("COMMIT");
-      client.release();
+      committed = true;
 
+      // The order and tickets are already committed, so a failure in the finance side effects must not
+      // turn a successful purchase into a 500. Log it loudly so escrow/credit can be reconciled.
       const territoryId = event.territory_id || 1;
-      await receiveTicketPayment({
-        territory_id: territoryId,
-        escrow_amount_pence: totalTicketPence,
-        booking_fee_pence: totalBookingFeePence,
-        buyer_id: buyerId,
-        order_id: order.id,
-        event_id: eventId,
-      });
+      try {
+        await receiveTicketPayment({
+          territory_id: territoryId,
+          escrow_amount_pence: totalTicketPence,
+          booking_fee_pence: totalBookingFeePence,
+          buyer_id: buyerId,
+          order_id: order.id,
+          event_id: eventId,
+        });
+      } catch (financeErr) {
+        console.error(`[purchaseTicketsV1] receiveTicketPayment failed for order ${order.id}:`, financeErr);
+      }
 
-      const ticketPricePounds = tier.price_amount / 100;
-      const { tier_label } = resolveTier(ticketPricePounds);
-      await allocateCredit(
-        {
+      try {
+        const ticketPricePounds = tier.price_amount / 100;
+        const { tier_label } = resolveTier(ticketPricePounds);
+        await allocateCredit({
           event_id: eventId,
           tier_label,
           quantity: qty,
           promoter_id: event.promoter_id,
-          guru_id: event.guru_id,
-          network_manager_id: event.network_manager_id,
           territory_id: territoryId,
           order_id: order.id,
-        },
-        {}
-      );
+        });
+      } catch (financeErr) {
+        console.error(`[purchaseTicketsV1] allocateCredit failed for order ${order.id}:`, financeErr);
+      }
 
       const tickets = attendee_names.map((name, i) => ({
         ticket_id: String(ticketIds[i]),
@@ -190,13 +201,14 @@ async function purchaseTicketsV1(req, res) {
         201
       );
     } catch (err) {
-      await client.query("ROLLBACK");
-      client.release();
+      if (!committed) await client.query("ROLLBACK").catch(() => {});
       if (err.code === "INVALID_TICKET_PRICE") {
         return fail(res, req, 400, "INVALID_TICKET_PRICE", err.message);
       }
       console.error("purchaseTicketsV1 error:", err);
       return fail(res, req, 500, "INTERNAL_ERROR", err.message);
+    } finally {
+      client.release();
     }
   } catch (err) {
     console.error("purchaseTicketsV1 error:", err);

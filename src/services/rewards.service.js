@@ -3,9 +3,9 @@ const pool = require('../db');
 // ==========================================
 // Get User Reward Balance
 // ==========================================
-const getUserRewardBalance = async (userId) => {
+const getUserRewardBalance = async (userId, db = pool) => {
   // 1️⃣ Get earned total from ACTIVE reward vouchers
-  const earnedResult = await pool.query(
+  const earnedResult = await db.query(
     `
     SELECT COALESCE(SUM(amount), 0) AS earned_total
     FROM reward_vouchers
@@ -18,7 +18,7 @@ const getUserRewardBalance = async (userId) => {
   const earned_total = parseInt(earnedResult.rows[0].earned_total);
 
   // 2️⃣ Get spent total from approved/completed redemptions
-  const spentResult = await pool.query(
+  const spentResult = await db.query(
     `
     SELECT COALESCE(SUM(requested_amount), 0) AS spent_total
     FROM reward_redemption_requests
@@ -52,11 +52,11 @@ const createRedemptionRequest = async (user, requested_amount, request_note) => 
   const { id: userId, role } = user;
 
   // 1️⃣ Validate role
-  if (!['promoter', 'guru'].includes(role)) {
+  if (role !== 'promoter') {
     throw {
       status: 403,
       code: 'REWARD_ACCESS_DENIED',
-      message: 'Only promoters and gurus can create redemption requests'
+      message: 'Only promoters can create redemption requests'
     };
   }
 
@@ -69,29 +69,50 @@ const createRedemptionRequest = async (user, requested_amount, request_note) => 
     };
   }
 
-  // 3️⃣ Get latest balance
-  const balance = await getUserRewardBalance(userId);
+  // 3️⃣ Check balance and insert under a per-user lock so two simultaneous requests cannot both pass.
+  // Pending requests are reserved against the balance as well.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [userId]);
 
-  if (requested_amount > balance.available_balance) {
-    throw {
-      status: 400,
-      code: 'INSUFFICIENT_BALANCE',
-      message: 'Requested amount exceeds available balance'
-    };
+    const balance = await getUserRewardBalance(userId, client);
+    const pendingResult = await client.query(
+      `
+      SELECT COALESCE(SUM(requested_amount), 0) AS pending_total
+      FROM reward_redemption_requests
+      WHERE requester_id = $1 AND status = 'pending'
+      `,
+      [userId]
+    );
+    const spendable = balance.available_balance - parseInt(pendingResult.rows[0].pending_total);
+
+    if (requested_amount > spendable) {
+      throw {
+        status: 400,
+        code: 'INSUFFICIENT_BALANCE',
+        message: 'Requested amount exceeds available balance'
+      };
+    }
+
+    const result = await client.query(
+      `
+      INSERT INTO reward_redemption_requests
+      (requester_type, requester_id, requested_amount, request_note, status)
+      VALUES ($1, $2, $3, $4, 'pending')
+      RETURNING *
+      `,
+      [role, userId, requested_amount, request_note]
+    );
+
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  // 4️⃣ Insert pending request
-  const result = await pool.query(
-    `
-    INSERT INTO reward_redemption_requests
-    (requester_type, requester_id, requested_amount, request_note, status)
-    VALUES ($1, $2, $3, $4, 'pending')
-    RETURNING *
-    `,
-    [role, userId, requested_amount, request_note]
-  );
-
-  return result.rows[0];
 };
 
 

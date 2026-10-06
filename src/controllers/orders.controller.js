@@ -3,6 +3,12 @@
 
 const pool = require("../db");
 const { getStripe } = require("../services/stripeClient");
+const {
+  getEscrowColumns,
+  ensureEscrowAccount,
+  readEscrowPence,
+  adjustEscrowPence,
+} = require("../services/escrowAccount.util");
 
 const crypto = require("crypto");
 const { ok, fail } = require("../utils/standardResponse");
@@ -83,6 +89,24 @@ const createOrder = async (req, res) => {
     }
 
     await client.query("BEGIN");
+
+    // Tickets can only be bought for a published event that has not ended
+    const sellable = await client.query(
+      `SELECT status, end_at FROM events WHERE id = $1`,
+      [eventIdNum]
+    );
+    if (sellable.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return fail(res, req, 404, "EVENT_NOT_FOUND", "Event not found");
+    }
+    if (sellable.rows[0].status !== "published") {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "EVENT_NOT_LIVE", "Tickets are not on sale for this event");
+    }
+    if (sellable.rows[0].end_at && new Date(sellable.rows[0].end_at).getTime() < Date.now()) {
+      await client.query("ROLLBACK");
+      return fail(res, req, 400, "EVENT_ENDED", "This event has already ended");
+    }
 
     // ── Idempotency check ─────────────────────────────────────────────────────
     // Return existing order if same buyer + same key within 15 minutes
@@ -168,7 +192,7 @@ const createOrder = async (req, res) => {
         orderPayload.stripe_checkout_url = existing.stripe_checkout_url;
         orderPayload.stripe_checkout_session_id = existing.stripe_checkout_session_id || null;
       }
-      return ok(res, req, { order: orderPayload }, 200);
+      return ok(res, req, { order: orderPayload }, "Your order has been retrieved.");
     }
 
     // ── Per-ticket type validation & fee calculation ─────────────────────────
@@ -388,7 +412,7 @@ const createOrder = async (req, res) => {
       orderPayload.stripe_checkout_url = baseOrderStripe.stripe_checkout_url || null;
       orderPayload.stripe_checkout_session_id = baseOrderStripe.stripe_checkout_session_id || null;
     }
-    return ok(res, req, { order: orderPayload }, 201);
+    return ok(res, req, { order: orderPayload }, "Your order has been created.", 201);
 
   } catch (err) {
     await client.query("ROLLBACK");
@@ -478,8 +502,6 @@ const confirmOrder = async (req, res) => {
            o.*,
            e.territory_id,
            e.promoter_id,
-           e.guru_id,
-           e.network_manager_id,
            e.id AS event_id
          FROM orders o
          JOIN events e ON e.id = o.event_id
@@ -1132,6 +1154,60 @@ const getBuyerCancelledEventTickets = async (req, res) => {
 };
 
 /**
+ * Refund Centre — the buyer's own refund requests with their current status.
+ * GET /api/orders/buyer/refunds?page=&limit=
+ */
+const getBuyerRefunds = async (req, res) => {
+  try {
+    const buyerId = req.user.id;
+    const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM refund_cases WHERE buyer_id = $1`,
+      [buyerId]
+    );
+    const total = countResult.rows[0]?.total || 0;
+
+    const result = await pool.query(
+      `SELECT rc.id, rc.order_item_id, rc.reason_code, rc.status, rc.amount,
+              rc.submitted_at, rc.approved_at, rc.reviewed_at, rc.executed_at, rc.admin_notes,
+              e.id AS event_id, e.title AS event_title
+       FROM refund_cases rc
+       JOIN events e ON e.id = rc.event_id
+       WHERE rc.buyer_id = $1
+       ORDER BY rc.submitted_at DESC, rc.id DESC
+       LIMIT $2 OFFSET $3`,
+      [buyerId, limitNum, offset]
+    );
+
+    const items = result.rows.map((row) => ({
+      id: row.id,
+      order_item_id: row.order_item_id,
+      event: { id: row.event_id, title: row.event_title },
+      reason_code: row.reason_code,
+      status: row.status,
+      amount: Number(row.amount || 0) / 100,
+      submitted_at: row.submitted_at,
+      approved_at: row.approved_at,
+      reviewed_at: row.reviewed_at,
+      executed_at: row.executed_at,
+      // admin_notes holds the King's rejection reason
+      admin_notes: row.status === "rejected" ? row.admin_notes : null,
+    }));
+
+    return ok(res, req, {
+      items,
+      pagination: { page: pageNum, limit: limitNum, total, total_pages: Math.ceil(total / limitNum) },
+    });
+  } catch (err) {
+    console.error("getBuyerRefunds error:", err);
+    return fail(res, req, 500, "INTERNAL_ERROR", err.message || "Failed to fetch refund requests");
+  }
+};
+
+/**
  * Refund Centre Step 2 (Phase 1) — submit buyer refund request.
  * POST /api/orders/buyer/refunds
  */
@@ -1221,81 +1297,16 @@ const submitBuyerRefund = async (req, res) => {
 
     // Escrow ring-fence: reserve amount in escrow pending liabilities.
     const territoryId = item.territory_id || 1;
-    const escrowColumnsResult = await client.query(
-      `SELECT column_name
-       FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'escrow_accounts'`
-    );
-    const escrowColumns = new Set(escrowColumnsResult.rows.map((r) => r.column_name));
-    const hasAccountType = escrowColumns.has("account_type");
-    const hasBalance = escrowColumns.has("balance");
-    const hasCurrentBalance = escrowColumns.has("current_balance");
-    const hasPendingLiabilities = escrowColumns.has("pending_liabilities");
+    const escrowCols = await getEscrowColumns(client);
+    await ensureEscrowAccount(client, territoryId, escrowCols);
 
-    if (hasAccountType) {
-      await client.query(
-        `INSERT INTO escrow_accounts (territory_id, account_type, current_balance, pending_liabilities, updated_at)
-         VALUES ($1, 'escrow', 0, 0, NOW())
-         ON CONFLICT (territory_id, account_type) DO NOTHING`,
-        [territoryId]
-      );
-    } else {
-      await client.query(
-        `INSERT INTO escrow_accounts (territory_id, balance, pending_liabilities, updated_at)
-         VALUES ($1, 0, 0, NOW())
-         ON CONFLICT (territory_id) DO NOTHING`,
-        [territoryId]
-      );
-    }
-
-    const escrowResult = await client.query(
-      hasAccountType
-        ? `SELECT
-             COALESCE(current_balance, 0) AS current_balance,
-             COALESCE(pending_liabilities, 0) AS pending_liabilities
-           FROM escrow_accounts
-           WHERE territory_id = $1 AND account_type = 'escrow'
-           LIMIT 1`
-        : `SELECT
-             COALESCE(balance, 0) AS balance,
-             COALESCE(pending_liabilities, 0) AS pending_liabilities
-           FROM escrow_accounts
-           WHERE territory_id = $1
-           LIMIT 1`,
-      [territoryId]
-    );
-
-    const escrowRow = escrowResult.rows[0] || {};
-    const currentBalancePence = hasBalance
-      ? Number(escrowRow.balance || 0)
-      : Number(escrowRow.current_balance || 0) * 100;
-    const pendingLiabilitiesPence = Number(escrowRow.pending_liabilities || 0) * (hasBalance ? 1 : 100);
-    if ((currentBalancePence - pendingLiabilitiesPence) < refundableAmount) {
+    const { balancePence, pendingPence } = await readEscrowPence(client, territoryId, escrowCols);
+    if ((balancePence - pendingPence) < refundableAmount) {
       await client.query("ROLLBACK");
       return fail(res, req, 409, "INSUFFICIENT_ESCROW", "Insufficient escrow balance to ring-fence refund amount");
     }
 
-    if (hasPendingLiabilities) {
-      if (hasBalance) {
-        await client.query(
-          `UPDATE escrow_accounts
-           SET pending_liabilities = COALESCE(pending_liabilities, 0) + $1,
-               updated_at = NOW()
-           WHERE territory_id = $2`,
-          [refundableAmount, territoryId]
-        );
-      } else if (hasCurrentBalance) {
-        const amountInCurrency = refundableAmount / 100;
-        await client.query(
-          `UPDATE escrow_accounts
-           SET pending_liabilities = COALESCE(pending_liabilities, 0) + $1,
-               updated_at = NOW()
-           WHERE territory_id = $2
-             AND account_type = 'escrow'`,
-          [amountInCurrency, territoryId]
-        );
-      }
-    }
+    await adjustEscrowPence(client, territoryId, escrowCols, { pendingDeltaPence: refundableAmount });
 
     await client.query(
       `INSERT INTO ledger_entries (
@@ -1633,6 +1644,7 @@ module.exports = {
   getBuyerTickets, // GET /buyer/tickets
   getBuyerCancelledEventTickets, // GET /buyer/tickets/cancelled-events
   submitBuyerRefund, // POST /buyer/refunds
+  getBuyerRefunds, // GET /buyer/refunds
   getTicketQR,   // GET /buyer/tickets/:itemId/qr
   scanTicket     // POST /events/:id/scan
 };

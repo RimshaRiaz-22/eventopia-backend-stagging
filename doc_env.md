@@ -1,16 +1,8 @@
-<!-- DB_HOST=postgres-testing.cp.mtechub.org
+DB_HOST=postgres-testing.cp.mtechub.org
 DB_PORT=5432
 DB_USER=eventopia-user
 DB_PASSWORD=Mtechub@123
-DB_NAME=eventopia-db -->
-
-
-DB_HOST=ep-curly-dream-b577e96k-pooler.c-7.us-east-2.aws.neon.tech
-DB_PORT=5432
-DB_USER=neondb_owner
-DB_PASSWORD=npg_57fQzVdAUGuy
-DB_NAME=eventopia
-
+DB_NAME=eventopia-db
 
 JWT_SECRET=d8a7210e1eb2141238caf3ebbea9e8f0198b62ea0001235d1c34fb9bc9d4334c
 JWT_EXPIRE=7d
@@ -30,5 +22,3 @@ SMTP_SECURE=false
 SMTP_USER=azmat.nilsa110@gmail.com
 SMTP_PASS=nlhsahelniymawfc
 SMTP_FROM=azmat.nilsa110@gmail.com
-
-postgresql://neondb_owner:npg_57fQzVdAUGuy@ep-curly-dream-b577e96k-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require

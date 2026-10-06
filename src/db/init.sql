@@ -165,16 +165,15 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user
 CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token);
 
 /* ================================
-   Sessions table (updated for JWT + refresh tokens)
+   Sessions table (JWT access token; one row per login)
    ================================ */
 CREATE TABLE IF NOT EXISTS sessions (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
   device_id TEXT,
-  refresh_token_hash TEXT NOT NULL, -- Hashed refresh token
   access_token_jti TEXT, -- JWT ID for access token (for revocation tracking)
   created_at TIMESTAMP DEFAULT NOW(),
-  expires_at TIMESTAMP NOT NULL, -- Refresh token expiration
+  expires_at TIMESTAMP NOT NULL, -- Session expiration (same as access token expiry)
   revoked_at TIMESTAMP,
   revoked_reason TEXT,
   ip TEXT,
@@ -182,7 +181,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_refresh_token ON sessions(refresh_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(user_id, device_id);
 
 /* ================================
@@ -1015,6 +1013,7 @@ CREATE TABLE IF NOT EXISTS guru_invites (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   email TEXT NOT NULL,
   name TEXT NOT NULL,
+  contract_name TEXT,
   role TEXT NOT NULL DEFAULT 'guru',
   invite_token TEXT UNIQUE NOT NULL,
   network_manager_user_id BIGINT REFERENCES users(id),
@@ -1037,7 +1036,7 @@ CREATE TABLE IF NOT EXISTS promoter_referral_invites (
   email TEXT NOT NULL,
   name TEXT NOT NULL,
   referral_token TEXT UNIQUE NOT NULL,
-  guru_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  guru_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
   kings_account_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
   expires_at TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '15 minutes'),
   used_at TIMESTAMP NULL,
@@ -1140,7 +1139,7 @@ CREATE TABLE IF NOT EXISTS promoter_referrals (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   referrer_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   referred_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
-  guru_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  guru_id BIGINT REFERENCES users(id) ON DELETE RESTRICT,
   territory_code TEXT NOT NULL DEFAULT 'UK',
   referral_link_token TEXT UNIQUE NOT NULL,
   start_date TIMESTAMPTZ,
@@ -2284,3 +2283,41 @@ CREATE TRIGGER ledger_entries_immutable
 ALTER TYPE event_status_enum ADD VALUE IF NOT EXISTS 'pending_approval' AFTER 'draft';
 ALTER TYPE event_status_enum ADD VALUE IF NOT EXISTS 'active' AFTER 'pending_approval';
 ALTER TYPE event_status_enum ADD VALUE IF NOT EXISTS 'cancellation_requested' AFTER 'completed';
+
+/* ================================
+   Admin Promoter Actions Audit Log (King's Promoter module)
+   ================================ */
+CREATE TABLE IF NOT EXISTS admin_promoter_actions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  admin_id BIGINT NOT NULL REFERENCES users(id),
+  promoter_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  action_type TEXT NOT NULL, -- 'application_approved', 'application_rejected', 'profile_update', 'block', 'unblock', 'delete'
+  old_value TEXT,
+  new_value TEXT,
+  reason TEXT,
+  metadata JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_admin ON admin_promoter_actions(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_promoter ON admin_promoter_actions(promoter_id);
+CREATE INDEX IF NOT EXISTS idx_admin_promoter_actions_type ON admin_promoter_actions(action_type);
+
+-- Escrow payouts: one row per liability paid out to a promoter after the event concludes.
+-- Written only by the King's payout approval (escrowPayout.service.js). One payout per liability.
+CREATE TABLE IF NOT EXISTS escrow_payouts (
+  payout_id        SERIAL PRIMARY KEY,
+  liability_id     INTEGER NOT NULL UNIQUE REFERENCES escrow_liabilities(liability_id),
+  event_id         BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  promoter_id      BIGINT NOT NULL REFERENCES promoter_profiles(id) ON DELETE CASCADE,
+  territory_id     BIGINT NOT NULL REFERENCES territories(id) ON DELETE CASCADE,
+  amount           NUMERIC(14, 2) NOT NULL CHECK (amount > 0),
+  status           VARCHAR(20) NOT NULL DEFAULT 'PAID',
+  coverage_status  VARCHAR(20),
+  override_reason  TEXT,
+  notes            TEXT,
+  approved_by      BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  approved_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_escrow_payouts_territory ON escrow_payouts(territory_id, approved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_escrow_payouts_promoter ON escrow_payouts(promoter_id);
